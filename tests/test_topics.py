@@ -28,6 +28,7 @@ def test_classify_no_false_positives():
     assert classify("Blockchain build", (), "") == ["web3"]
     assert "edu" not in classify("ML hack", ("Machine Learning",), "deep learning, machine learning")
     assert "edu" not in classify("CTF", ("для школьников",), "")
+    assert classify("InnoCTF Junior", ("CTF", "для школьников"), "") == ["security"]  # категории «школьникам» нет
 
 
 def make(title: str, description: str = "", **kw) -> Hackathon:

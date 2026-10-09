@@ -101,9 +101,6 @@ _TOPICS = [
     Topic("science", "Наука", "industry", (
         "наук", "научн", "science", "research", "исследоват", "физик", "хими", "математ")),
     # --- аудитория ---
-    Topic("school", "Школьникам", "audience", (
-        "школьник", "для школьников", "high school", "учащих", "8—11", "8-11", "9-11", "10-11", "юниор",
-        "junior", "детск", "подростк")),
     Topic("students", "Студентам", "audience", (
         "студент", "student", "вуз", "university", "collegiate", "college", "магистр", "бакалавр",
         "university students")),
