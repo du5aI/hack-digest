@@ -39,6 +39,7 @@ def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
                 end=end,
                 reg_deadline=reg_end if registration_open else None,
                 prize=(c.get("prizes") or "").strip(),
+                description=(c.get("description") or "").strip(),
                 tags=(tag,) if tag else (),
             )
         )

@@ -1,4 +1,5 @@
 """Devfolio: публичный JSON API, в основном индийские и международные хакатоны."""
+import re
 from datetime import datetime
 
 import aiohttp
@@ -13,6 +14,12 @@ FILTERS = ("application_open", "upcoming")
 
 def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+
+
+def _plain(markdown: str) -> str:
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", markdown)  # ссылки и картинки
+    text = re.sub(r"[#*_`>|]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:2000]
 
 
 def parse(data: dict) -> list[Hackathon]:
@@ -32,7 +39,8 @@ def parse(data: dict) -> list[Hackathon]:
             reg_deadline=_dt(settings.get("reg_ends_at")),
             online=online,
             location="" if online else place,
-            tags=tuple(t["name"] for t in h.get("themes") or () if t.get("name") != "No Restrictions"),
+            tags=tuple(t["name"] for t in h.get("themes") or () if t.get("name")),
+            description=_plain(" ".join(filter(None, (h.get("tagline"), h.get("desc"))))),
         ))
     return items
 

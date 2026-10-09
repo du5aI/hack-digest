@@ -49,6 +49,7 @@ def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
             location=", ".join(cities),
             prize=re.sub(r"\s+", " ", prize.group(1)).strip() if prize else "",
             tags=tuple(TAGS[s] for s in parts if s in TAGS),
+            description=re.sub(r"\s+", " ", descr).strip(),
         ))
     return items
 

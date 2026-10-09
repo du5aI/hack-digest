@@ -12,7 +12,8 @@ from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineK
 
 from hackdigest import config as config_module
 from hackdigest.digest import SOURCE_NAMES, build_digest, format_interval, parse_interval, select
-from hackdigest.filters import FORMATS, PERIODS, REGIONS, TOPICS
+from hackdigest.filters import FORMATS, PERIODS, REGIONS
+from hackdigest.topics import GROUPS, TOPICS
 from hackdigest.sources import SOURCES, fetch_all
 from hackdigest.sources.telegram import normalize_channel
 from hackdigest.storage import Chat, Storage
@@ -101,9 +102,12 @@ def filter_keyboard(chat: Chat) -> InlineKeyboardMarkup:
             for k, v in REGIONS.items()]
     rows.append([InlineKeyboardButton(text=_mark(f.format == k, v.capitalize()), callback_data=f"flt:fmt:{k}")
                  for k, v in FORMATS.items()])
-    topic_buttons = [InlineKeyboardButton(text=_mark(k in f.topics, label), callback_data=f"flt:top:{k}")
-                     for k, (label, _) in TOPICS.items()]
-    rows += [topic_buttons[i:i + 2] for i in range(0, len(topic_buttons), 2)]
+    group_buttons = []
+    for group, title in GROUPS.items():
+        n = sum(TOPICS[t].group == group for t in f.topics)
+        group_buttons.append(InlineKeyboardButton(text=f"{title}: {n}" if n else f"{title}…",
+                                                  callback_data=f"flt:menu:{group}"))
+    rows.append(group_buttons)
     rows.append([InlineKeyboardButton(text=_mark(f.period_days == k, v), callback_data=f"flt:per:{k}")
                  for k, v in PERIODS.items()])
     rows.append([InlineKeyboardButton(text="Сбросить", callback_data="flt:reset"),
@@ -111,12 +115,28 @@ def filter_keyboard(chat: Chat) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def topics_keyboard(chat: Chat, group: str) -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(text=_mark(t.key in chat.filters.topics, t.label), callback_data=f"flt:top:{t.key}")
+               for t in TOPICS.values() if t.group == group]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(text="Любые", callback_data=f"flt:clear:{group}"),
+                 InlineKeyboardButton(text="Готово", callback_data="flt:menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 FILTER_TEXT = (
     "<b>Фильтр</b>\n"
-    "Сверху регион: «Россия + онлайн в мире» — российские события и международные онлайн-хакатоны. "
-    "Дальше формат, темы (если ничего не отмечено, подходят любые) "
-    "и насколько далеко вперёд смотреть по дате старта."
+    "Регион: «Россия + онлайн в мире» — российские события и международные онлайн-хакатоны.\n"
+    "Тематика разбита на три раздела: направление (что разрабатывают), сфера (для какой отрасли) "
+    "и для кого. Внутри раздела подходит любая из отмеченных тем, между разделами — все сразу: "
+    "AI + медицина значит AI-хакатоны в медицине.\n"
+    "Последняя строка — насколько далеко вперёд смотреть по дате старта."
 )
+TOPICS_TEXT = {
+    "direction": "<b>Направление</b> — что разрабатывают. Отметьте интересные; если ничего не отмечено, подходят любые.",
+    "industry": "<b>Сфера</b> — для какой отрасли задачи. Если ничего не отмечено, подходят любые.",
+    "audience": "<b>Для кого</b> — школьникам, студентам, новичкам. Если ничего не отмечено, подходят все.",
+}
 
 
 # ---------- команды ----------
@@ -263,23 +283,39 @@ async def filter_action(query: CallbackQuery, bot: Bot, db: Storage, cfg: config
         return
     parts = query.data.split(":")
     f = chat.filters
-    if parts[1] == "show":
+    action, value = parts[1], parts[2] if len(parts) > 2 else ""
+    if action == "show":
         await query.answer()
         await send_digest(bot, db, chat, cfg.limit, manual=True)
         return
-    if parts[1] == "reset":
+    if action == "menu":
+        # переключаем экран: главное меню фильтра или список тем одной группы
+        if value in GROUPS:
+            await query.message.edit_text(TOPICS_TEXT[value], reply_markup=topics_keyboard(chat, value))
+        else:
+            await query.message.edit_text(FILTER_TEXT, reply_markup=filter_keyboard(chat))
+        await query.answer(f"Фильтр: {f.describe()}" if value not in GROUPS else None)
+        return
+
+    group = None
+    if action == "reset":
         f.format, f.topics, f.period_days, f.region = "any", [], 0, "ru_online"
-    elif parts[1] == "reg" and parts[2] in REGIONS:
-        f.region = parts[2]
-    elif parts[1] == "fmt" and parts[2] in FORMATS:
-        f.format = parts[2]
-    elif parts[1] == "top" and parts[2] in TOPICS:
-        f.topics = [t for t in f.topics if t != parts[2]] if parts[2] in f.topics else [*f.topics, parts[2]]
-    elif parts[1] == "per" and int(parts[2]) in PERIODS:
-        f.period_days = int(parts[2])
+    elif action == "reg" and value in REGIONS:
+        f.region = value
+    elif action == "fmt" and value in FORMATS:
+        f.format = value
+    elif action == "top" and value in TOPICS:
+        group = TOPICS[value].group
+        f.topics = [t for t in f.topics if t != value] if value in f.topics else [*f.topics, value]
+    elif action == "clear" and value in GROUPS:
+        group = value
+        f.topics = [t for t in f.topics if TOPICS[t].group != value]
+    elif action == "per" and value.isdigit() and int(value) in PERIODS:
+        f.period_days = int(value)
     db.set_filters(chat.chat_id, f)
+    markup = topics_keyboard(chat, group) if group else filter_keyboard(chat)
     try:
-        await query.message.edit_reply_markup(reply_markup=filter_keyboard(chat))
+        await query.message.edit_reply_markup(reply_markup=markup)
     except TelegramBadRequest:  # «message is not modified» при повторном нажатии
         pass
     await query.answer(f"Фильтр: {f.describe()}")

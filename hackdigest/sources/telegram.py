@@ -112,7 +112,9 @@ def parse(html: str, channel: str, now: datetime | None = None) -> list[Hackatho
         if not is_announcement(text):
             continue
         start, end, deadline = extract_dates(text, posted)
-        if end and end < now:
+        if not start and not deadline:
+            continue  # в анонсе всегда есть даты; без них это скорее статья или история
+        if (end or start) and (end or start) < now and not (deadline and deadline > now):
             continue  # событие из поста уже прошло
         title = _title(text)
         items.append(Hackathon(
@@ -124,6 +126,7 @@ def parse(html: str, channel: str, now: datetime | None = None) -> list[Hackatho
             end=end,
             reg_deadline=deadline if deadline and deadline > now else None,
             summary=_summary(text, title),
+            description=text,
             via=channel_title,
         ))
     return items

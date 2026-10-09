@@ -12,6 +12,7 @@ from matplotlib.patches import FancyBboxPatch  # noqa: E402
 from hackdigest.digest import MONTHS_FULL, MONTHS_SHORT, SOURCE_NAMES  # noqa: E402
 from hackdigest.models import Hackathon  # noqa: E402
 from hackdigest.text import strip_emoji  # noqa: E402
+from hackdigest.topics import SHORT, topics_of  # noqa: E402
 
 SURFACE = "#fcfcfb"
 TEXT = "#0b0b0b"
@@ -28,6 +29,29 @@ TITLE_LEN = 40
 
 def _short(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def _topic_label(ax, h: Hackathon, row: int, now: datetime, x0: float, x1: float) -> None:
+    """Тематика мелким серым текстом справа от полосы (или слева, если справа нет места)."""
+    tags = [SHORT[k] for k in topics_of(h) if k in SHORT][:2]
+    if not tags:
+        return
+    points = [mdates.date2num(d) for d in (h.start, h.end, h.reg_deadline) if d]
+    if h.reg_deadline and h.reg_deadline < now:
+        points.pop()
+    right = min(max(points), x1)
+    left = max(min(points), x0)
+    text = " · ".join(tags)
+    if right < x1 - (x1 - x0) * 0.22:
+        ax.annotate(text, xy=(right, row), xytext=(8, 0), textcoords="offset points",
+                    va="center", ha="left", fontsize=7.5, color=TEXT_MUTED)
+    elif left > x0 + (x1 - x0) * 0.22:
+        ax.annotate(text, xy=(left, row), xytext=(-8, 0), textcoords="offset points",
+                    va="center", ha="right", fontsize=7.5, color=TEXT_MUTED)
+    elif h.start and right - left > (x1 - x0) * 0.25:
+        # длинная полоса через всё окно — подпись внутри неё
+        ax.annotate(text, xy=(max(mdates.date2num(h.start), x0), row), xytext=(8, 0), textcoords="offset points",
+                    va="center", ha="left", fontsize=7.5, color=SURFACE, fontweight="bold", zorder=4)
 
 
 def render_timeline(items: list[Hackathon], new_uids: set[str], now: datetime, window_days: int = WINDOW_DAYS) -> bytes | None:
@@ -54,6 +78,7 @@ def render_timeline(items: list[Hackathon], new_uids: set[str], now: datetime, w
 
     x0, x1 = mdates.date2num(left), mdates.date2num(right)
     for i, h in enumerate(rows):
+        _topic_label(ax, h, i, now, x0, x1)
         if h.start is None:  # известен только дедлайн регистрации — рисуем лишь его
             ax.plot(mdates.date2num(h.reg_deadline), i, marker="D", markersize=6.5,
                     color=DEADLINE, markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3)
@@ -101,7 +126,8 @@ def render_timeline(items: list[Hackathon], new_uids: set[str], now: datetime, w
 
     fig.text(0.012, 1 - 0.32 / height, "Ближайшие хакатоны", fontsize=13, fontweight="bold", color=TEXT)
     fig.text(0.012, 1 - 0.58 / height,
-             f"на {now.day} {MONTHS_FULL[now.month - 1]} {now.year}, жирным — новые с прошлого дайджеста",
+             f"на {now.day} {MONTHS_FULL[now.month - 1]} {now.year}. Рядом с полосой — тематика, "
+             "жирным — новые с прошлого дайджеста",
              fontsize=8.5, color=TEXT_MUTED)
     # легенда: что означают полоса и ромб
     lx = 0.62

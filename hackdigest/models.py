@@ -17,6 +17,7 @@ class Hackathon:
     tags: tuple[str, ...] = field(default_factory=tuple)
     dates_text: str = ""  # даты как текст, если не удалось разобрать
     summary: str = ""  # короткий текст (для постов из каналов)
+    description: str = ""  # описание из источника: по нему определяется тематика и «о чём»
     via: str = ""  # где найдено: название канала и т.п.
 
     @property

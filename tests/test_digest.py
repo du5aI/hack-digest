@@ -117,3 +117,15 @@ def test_emoji_stripped_from_titles():
     h = Hackathon(**{**make(1).__dict__, "title": "Arkiv: Global Tour Stop 🌍 ⚡️"})
     text = build_digest([h], set(), NOW, ["devpost"])[0]
     assert "<b>Arkiv: Global Tour Stop</b>" in text
+
+
+def test_merge_fills_gaps_from_duplicate():
+    poor = Hackathon(uid="hackathons_rus:1", source="hackathons_rus", title="О! Хакатон 2026", url="u1",
+                     reg_deadline=NOW + timedelta(days=5), description="Возвращается!", tags=("AI / ML",))
+    rich = Hackathon(uid="codenrock:2", source="codenrock", title="О! Хакатон", url="u2",
+                     start=NOW + timedelta(days=14), end=NOW + timedelta(days=21), prize="1 000 000 ₽",
+                     description="Онлайн-соревнование по разработке тревел-решений: бронирование отелей и AI-агенты.")
+    [h] = select([poor, rich], Filters(), NOW)
+    assert h.uid == "hackathons_rus:1" and h.url == "u1"  # ссылка и дедлайн первой записи
+    assert h.start == rich.start and h.end == rich.end and h.prize == "1 000 000 ₽"
+    assert h.description == rich.description and h.tags == ("AI / ML",)

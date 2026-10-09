@@ -1,9 +1,10 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from html import escape
 
-from hackdigest.filters import TOPICS, Filters, topics_of
+from hackdigest.filters import Filters
+from hackdigest.topics import labels, topics_of
 from hackdigest.models import Hackathon
 from hackdigest.text import strip_emoji
 
@@ -109,43 +110,64 @@ class Section:
     collapsed: bool = False  # свернуть в раскрывающуюся цитату
 
 
+def brief(h: Hackathon, limit: int = 180) -> str:
+    """Первая фраза описания — о чём хакатон. Пусто, если описание просто повторяет название."""
+    text = strip_emoji(re.sub(r"\s+", " ", h.description)).strip()
+    if not text:
+        return ""
+    # конец первой фразы, но не раньше 40 символов: «О! Хакатон» — не конец предложения
+    ends = [m.start() for m in re.finditer(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ«\"])", text) if m.start() >= 40]
+    sentence = text[: ends[0]] if ends else text
+    if title_key(sentence) == title_key(h.title):
+        return ""
+    if len(sentence) > limit:
+        sentence = sentence[: limit - 1].rsplit(" ", 1)[0].rstrip(",;:—-") + "…"
+    return sentence
+
+
+def topics_line(h: Hackathon) -> str:
+    keys = topics_of(h)
+    parts = []
+    # длинные описания с несколькими треками упоминают всё подряд — показываем самое выраженное
+    if direction := labels(keys, "direction", limit=3):
+        parts.append("Направление: " + ", ".join(direction))
+    if industry := labels(keys, "industry", limit=2):
+        parts.append("Сфера: " + ", ".join(industry).lower())
+    if audience := labels(keys, "audience"):
+        parts.append(", ".join(audience))
+    return " · ".join(parts)
+
+
 def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
     title = f'<a href="{escape(h.url)}"><b>{escape(strip_emoji(h.title))}</b></a>'
     if is_new:
         title += " <i>— новое</i>"
     lines = [title]
 
-    if h.source == "telegram":
-        meta = [escape(h.via)]
-        if h.start:
-            meta.append(fmt_range(h.start, h.end, now))
-        if h.summary:
-            meta.append(escape(h.summary))
-        lines.append(" · ".join(meta))
-        return "\n".join(lines)
-
     meta = []
+    if h.source == "telegram":
+        meta.append(escape(h.via))
     if h.start:
         meta.append(fmt_range(h.start, h.end, now))
     elif h.dates_text:
         meta.append(escape(h.dates_text))
-    if h.online is True:
-        meta.append("онлайн")
-    elif h.location:
-        meta.append(escape(h.location))
-    meta.append(escape(SOURCE_NAMES.get(h.source, h.source)))
-    if h.prize:
-        meta.append(escape(h.prize))
+    if h.source != "telegram":
+        if h.online is True:
+            meta.append("онлайн")
+        elif h.location:
+            meta.append(escape(h.location))
+        meta.append(escape(SOURCE_NAMES.get(h.source, h.source)))
+        if h.prize:
+            meta.append(escape(h.prize))
+    if h.reg_deadline and h.reg_deadline >= now:
+        meta.append(f"регистрация до {fmt_day(h.reg_deadline, now)}")
     lines.append(" · ".join(meta))
 
-    extra = []
-    if h.reg_deadline and h.reg_deadline >= now:
-        extra.append(f"регистрация до {fmt_day(h.reg_deadline, now)}")
-    topics = [TOPICS[t][0] for t in sorted(topics_of(h))]
-    if topics:
-        extra.append(", ".join(topics))
-    if extra:
-        lines.append(escape(" · ".join(extra)))
+    if topics := topics_line(h):
+        lines.append(f"<i>{escape(topics)}</i>")
+    about = h.summary if h.source == "telegram" else brief(h)
+    if about:
+        lines.append(escape(about))
     return "\n".join(lines)
 
 
@@ -161,23 +183,44 @@ def _name_keys(title: str) -> set[str]:
     return {k for k in keys if len(k) >= 6}
 
 
+_MERGEABLE = ("start", "end", "reg_deadline", "online", "location", "prize", "description")
+
+
+def merge(main: Hackathon, extra: Hackathon) -> Hackathon:
+    """Дополняет пустые поля записи данными дубля с другого источника."""
+    updates = {f: getattr(extra, f) for f in _MERGEABLE
+               if getattr(main, f) in (None, "") and getattr(extra, f) not in (None, "")}
+    if len(extra.description) > 2 * len(main.description):  # одна рекламная фраза против нормального описания
+        updates["description"] = extra.description
+    if updates.get("start") and main.end and not updates.get("end"):
+        updates["end"] = extra.end  # не смешиваем начало одного источника с концом другого
+    return replace(main, tags=tuple(dict.fromkeys(main.tags + extra.tags)), **updates)
+
+
 def select(items: list[Hackathon], filters: Filters, now: datetime) -> list[Hackathon]:
     """Предстоящие события под фильтр, без дублей, отсортированные по ближайшей дате.
     Анонсы из каналов о событиях, которые уже есть с сайтов, и репосты одного анонса отбрасываются."""
     far = now + timedelta(days=10_000)
-    sites, posts, seen = [], [], []
+    # сначала склеиваем дубли (с дополнением данных), потом фильтруем — иначе фильтр по теме
+    # мог бы отбросить запись с описанием и оставить её «бедный» дубль
+    sites: list[Hackathon] = []
+    posts, seen = [], []
     for h in sorted(items, key=lambda h: h.key_date or far):
-        if not h.is_upcoming(now) or not filters.matches(h, now):
-            continue
         if h.source == "telegram":
             posts.append(h)
             continue
         key = title_key(h.title)
         # «KubSTU CTF 2026» и «KubSTU CTF 2026 Autumn Edition» — одно и то же
-        if any(key == k or (min(len(key), len(k)) >= 6 and (key.startswith(k) or k.startswith(key))) for k in seen):
+        same = next((i for i, k in enumerate(seen)
+                     if key == k or (min(len(key), len(k)) >= 6 and (key.startswith(k) or k.startswith(key)))), None)
+        if same is not None:
+            sites[same] = merge(sites[same], h)
             continue
         seen.append(key)
         sites.append(h)
+    sites = [h for h in sites if h.is_upcoming(now) and filters.matches(h, now)]
+    sites.sort(key=lambda h: h.key_date or far)
+    posts = [p for p in posts if p.is_upcoming(now) and filters.matches(p, now)]
     known = set().union(*(_name_keys(h.title) for h in sites)) if sites else set()
     fresh_posts, post_keys = [], set()
     for p in posts:

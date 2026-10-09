@@ -71,13 +71,15 @@ def test_mlh_parse():
 
 def test_devfolio_parse():
     data = {"result": [{
-        "uuid": "x", "name": "Wild Bugs", "slug": "wild-bugs", "starts_at": "2026-10-13T18:30:00.000Z",
+        "uuid": "x", "name": "Wild Bugs", "tagline": "Code. Crash.", "desc": "## **24h** [online](https://x) hack", "slug": "wild-bugs", "starts_at": "2026-10-13T18:30:00.000Z",
         "ends_at": "2026-10-15T18:29:00.000Z", "is_online": True,
         "themes": [{"name": "No Restrictions"}, {"name": "AI"}],
         "hackathon_setting": {"subdomain": "wild-bugs", "reg_ends_at": "2026-10-09T18:29:00.000Z"}}]}
     [h] = devfolio.parse(data)
-    assert h.url == "https://wild-bugs.devfolio.co/" and h.online is True and h.tags == ("AI",)
+    assert h.url == "https://wild-bugs.devfolio.co/" and h.online is True
+    assert h.tags == ("No Restrictions", "AI")
     assert h.reg_deadline.hour == 18
+    assert h.description == "Code. Crash. 24h online hack"
 
 
 def test_normalize_channel():
@@ -99,6 +101,7 @@ def test_telegram_parse():
     html = ('<div class="tgme_channel_info_header_title">Канал ВУЗа</div><section class="tgme_channel_history">'
             + _post("1", "Хакатон «Код города»<br>Пройдёт 15–17 ноября. Регистрация до 30 октября", "2026-10-05T10:00:00+00:00")
             + _post("2", "Открыт набор на курсы", "2026-10-06T10:00:00+00:00")
+            + _post("4", "История: в 1999 году прошёл первый хакатон, участники и регистрация", "2026-10-06T11:00:00+00:00")
             + _post("3", "Старый хакатон", "2026-08-01T10:00:00+00:00")
             + "</section>")
     [h] = telegram.parse(html, "chan", now=NOW)
@@ -150,3 +153,10 @@ def test_telegram_announcement_heuristic():
     assert not telegram.is_announcement("Подвели итоги хакатона, поздравляем победителей! Регистрация была большой")
     assert not telegram.is_announcement("Открыт набор на курсы, регистрация")
     assert telegram.clean("🔥 Хакатон 🚀") == "Хакатон"
+
+
+def test_leader_id_description():
+    from hackdigest.sources import leader_id
+    info = json.dumps({"blocks": [{"data": {"text": "Хакатон <b>для студентов</b>&nbsp;вузов"}}, {"type": "x"}]})
+    assert leader_id._description(info) == "Хакатон для студентов вузов"
+    assert leader_id._description("not json") == ""

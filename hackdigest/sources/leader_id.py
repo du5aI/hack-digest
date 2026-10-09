@@ -1,4 +1,6 @@
 """Leader-ID — платформа мероприятий (АСИ, «Точки кипения»): события с типом «Хакатон»."""
+import html
+import json
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +29,16 @@ def _dt(value: str | None, tz: timezone) -> datetime | None:
     return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz) if value else None
 
 
+def _description(full_info: str | None) -> str:
+    """full_info — JSON в формате Editor.js: {"blocks": [{"data": {"text": "..."}}]}."""
+    try:
+        blocks = json.loads(full_info or "{}").get("blocks", [])
+    except (ValueError, AttributeError):
+        return ""
+    text = " ".join(str((b.get("data") or {}).get("text", "")) for b in blocks if isinstance(b, dict))
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text))).strip()[:2000]
+
+
 def parse(data: dict) -> list[Hackathon]:
     items = []
     for e in (data.get("data") or {}).get("_items", []):
@@ -46,6 +58,7 @@ def parse(data: dict) -> list[Hackathon]:
             online=online,
             location="" if online else (e.get("city") or ""),
             tags=tuple(t["name"] for t in e.get("themes") or () if t.get("name")),
+            description=_description(e.get("full_info")),
         ))
     return items
 
