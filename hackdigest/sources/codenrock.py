@@ -5,6 +5,7 @@ import aiohttp
 from hackdigest.models import Hackathon
 
 API_URL = "https://codenrock.com/api/contests"
+LIST_URL = "https://codenrock.com/contests"
 MAX_PAGES = 4
 # стажировки, акселераторы и олимпиады пропускаем — нужны только соревнования-хакатоны
 TYPES = {"hackathon": "", "ctf": "CTF", "ml_ai": "ML/AI"}
@@ -14,10 +15,6 @@ def _dt(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _fmt(d: datetime) -> str:
-    return d.strftime("%d.%m.%Y")
 
 
 def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
@@ -31,9 +28,6 @@ def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
         registration_open = reg_end is not None and reg_end > now
         if not registration_open and (start is None or start <= now):
             continue
-        dates = f"{_fmt(start)} – {_fmt(end)}" if start and end else ""
-        if registration_open:
-            dates += f" (рег. до {_fmt(reg_end)})"
         tag = TYPES[c["type"]]
         items.append(
             Hackathon(
@@ -41,10 +35,11 @@ def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
                 source="codenrock",
                 title=c["name"].strip(),
                 url=f"https://codenrock.com/contests/{c['slug']}",
-                dates=dates.strip(),
+                start=start,
+                end=end,
+                reg_deadline=reg_end if registration_open else None,
                 prize=(c.get("prizes") or "").strip(),
                 tags=(tag,) if tag else (),
-                starts_at=start,
             )
         )
     return items
@@ -64,4 +59,4 @@ async def fetch(session: aiohttp.ClientSession) -> list[Hackathon]:
         if page >= total_pages or not any(c.get("status") == "active" for c in contests):
             break
     far_future = datetime.max.replace(tzinfo=timezone.utc)
-    return sorted(result.values(), key=lambda h: h.starts_at or far_future)
+    return sorted(result.values(), key=lambda h: h.start or far_future)

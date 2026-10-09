@@ -8,8 +8,21 @@ class Hackathon:
     source: str
     title: str
     url: str
-    dates: str  # человекочитаемые даты
+    start: datetime | None = None
+    end: datetime | None = None
+    reg_deadline: datetime | None = None
+    online: bool | None = None  # None — неизвестно
     location: str = ""
     prize: str = ""
     tags: tuple[str, ...] = field(default_factory=tuple)
-    starts_at: datetime | None = None  # для сортировки, если известно
+    dates_text: str = ""  # даты как текст, если не удалось разобрать
+    summary: str = ""  # короткий текст (для постов из каналов)
+    via: str = ""  # где найдено: название канала и т.п.
+
+    def is_upcoming(self, now: datetime) -> bool:
+        """Ещё не началось, или уже идёт, но регистрация открыта."""
+        if self.reg_deadline and self.reg_deadline > now:
+            return True
+        if self.start:
+            return self.start.date() >= now.date()
+        return self.end is None or self.end > now
