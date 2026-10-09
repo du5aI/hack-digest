@@ -11,6 +11,7 @@ from matplotlib.patches import FancyBboxPatch  # noqa: E402
 
 from hackdigest.digest import MONTHS_FULL, MONTHS_SHORT, SOURCE_NAMES  # noqa: E402
 from hackdigest.models import Hackathon  # noqa: E402
+from hackdigest.text import strip_emoji  # noqa: E402
 
 SURFACE = "#fcfcfb"
 TEXT = "#0b0b0b"
@@ -22,7 +23,7 @@ TODAY = "#8a8984"
 
 MAX_ROWS = 28
 WINDOW_DAYS = 56
-TITLE_LEN = 44
+TITLE_LEN = 40
 
 
 def _short(text: str, n: int) -> str:
@@ -33,9 +34,14 @@ def render_timeline(items: list[Hackathon], new_uids: set[str], now: datetime, w
     """Возвращает PNG или None, если рисовать нечего (нет событий с датами в окне)."""
     left = (now - timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
     right = left + timedelta(days=window_days)
-    rows = [h for h in items if h.start and h.start < right and (h.end or h.start) >= left]
-    # сначала то, что стартует скоро; уже идущие длинные конкурсы — в конец
-    rows.sort(key=lambda h: (h.start.date() < now.date(), h.start))
+    def visible(h: Hackathon) -> bool:
+        if h.start:
+            return h.start < right and (h.end or h.start) >= left
+        return h.reg_deadline is not None and now <= h.reg_deadline < right
+
+    rows = [h for h in items if h.source != "telegram" and visible(h)]
+    # сначала то, что скоро; уже идущие длинные конкурсы — в конец
+    rows.sort(key=lambda h: (bool(h.start) and h.start.date() < now.date(), h.key_date))
     rows = rows[:MAX_ROWS]
     if not rows:
         return None
@@ -48,6 +54,10 @@ def render_timeline(items: list[Hackathon], new_uids: set[str], now: datetime, w
 
     x0, x1 = mdates.date2num(left), mdates.date2num(right)
     for i, h in enumerate(rows):
+        if h.start is None:  # известен только дедлайн регистрации — рисуем лишь его
+            ax.plot(mdates.date2num(h.reg_deadline), i, marker="D", markersize=6.5,
+                    color=DEADLINE, markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3)
+            continue
         start = max(mdates.date2num(h.start), x0)
         end = min(mdates.date2num(h.end or h.start + timedelta(hours=23)), x1)
         width = max(end - start, 0.6)  # однодневные события тоже должны быть видны
@@ -56,11 +66,11 @@ def render_timeline(items: list[Hackathon], new_uids: set[str], now: datetime, w
             boxstyle="round,pad=0,rounding_size=0.18", mutation_aspect=1 / 6,
             facecolor=BAR, edgecolor=SURFACE, linewidth=1.5,
         ))
-        if h.reg_deadline and x0 <= mdates.date2num(h.reg_deadline) <= x1:
+        if h.reg_deadline and h.reg_deadline >= now and mdates.date2num(h.reg_deadline) <= x1:
             ax.plot(mdates.date2num(h.reg_deadline), i, marker="D", markersize=6.5,
                     color=DEADLINE, markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=3)
 
-    labels = [_short(h.title, TITLE_LEN) for h in rows]
+    labels = [_short(strip_emoji(h.title), TITLE_LEN) for h in rows]
     ax.set_yticks(range(len(rows)), labels)
     for tick, h in zip(ax.get_yticklabels(), rows):
         tick.set_color(TEXT)
@@ -102,7 +112,7 @@ def render_timeline(items: list[Hackathon], new_uids: set[str], now: datetime, w
                                 markersize=6.5, color=DEADLINE, linestyle="none"))
     fig.text(lx + 0.18, 1 - 0.47 / height, "конец регистрации", fontsize=8.5, color=TEXT_MUTED, va="center")
 
-    fig.subplots_adjust(left=0.3, right=0.92, top=1 - 1.0 / height, bottom=0.25 / height)
+    fig.subplots_adjust(left=0.36, right=0.89, top=1 - 1.0 / height, bottom=0.25 / height)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor=SURFACE)
     plt.close(fig)

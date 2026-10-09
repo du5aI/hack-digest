@@ -12,7 +12,7 @@ from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineK
 
 from hackdigest import config as config_module
 from hackdigest.digest import SOURCE_NAMES, build_digest, format_interval, parse_interval, select
-from hackdigest.filters import FORMATS, PERIODS, TOPICS
+from hackdigest.filters import FORMATS, PERIODS, REGIONS, TOPICS
 from hackdigest.sources import SOURCES, fetch_all
 from hackdigest.sources.telegram import normalize_channel
 from hackdigest.storage import Chat, Storage
@@ -45,7 +45,10 @@ async def collect(chat: Chat, db: Storage):
     now = datetime.now(timezone.utc)
     raw = await fetch_all(chat.sources, chat.channels)
     items = select(raw, chat.filters, now)
-    new = db.unseen(chat.chat_id, [h.uid for h in items])
+    uids = [h.uid for h in items]
+    new = db.unseen(chat.chat_id, uids)
+    if len(new) == len(uids):  # первый дайджест: «новым» было бы всё, пометки ничего не дают
+        new = set()
     return now, items, new
 
 
@@ -94,8 +97,10 @@ def sources_keyboard(chat: Chat) -> InlineKeyboardMarkup:
 
 def filter_keyboard(chat: Chat) -> InlineKeyboardMarkup:
     f = chat.filters
-    rows = [[InlineKeyboardButton(text=_mark(f.format == k, v.capitalize()), callback_data=f"flt:fmt:{k}")
-             for k, v in FORMATS.items()]]
+    rows = [[InlineKeyboardButton(text=_mark(f.region == k, v.capitalize()), callback_data=f"flt:reg:{k}")]
+            for k, v in REGIONS.items()]
+    rows.append([InlineKeyboardButton(text=_mark(f.format == k, v.capitalize()), callback_data=f"flt:fmt:{k}")
+                 for k, v in FORMATS.items()])
     topic_buttons = [InlineKeyboardButton(text=_mark(k in f.topics, label), callback_data=f"flt:top:{k}")
                      for k, (label, _) in TOPICS.items()]
     rows += [topic_buttons[i:i + 2] for i in range(0, len(topic_buttons), 2)]
@@ -108,8 +113,9 @@ def filter_keyboard(chat: Chat) -> InlineKeyboardMarkup:
 
 FILTER_TEXT = (
     "<b>Фильтр</b>\n"
-    "Первая строка — формат, затем темы (если ничего не отмечено, подходят любые), "
-    "последняя строка — насколько далеко вперёд смотреть по дате старта."
+    "Сверху регион: «Россия + онлайн в мире» — российские события и международные онлайн-хакатоны. "
+    "Дальше формат, темы (если ничего не отмечено, подходят любые) "
+    "и насколько далеко вперёд смотреть по дате старта."
 )
 
 
@@ -262,7 +268,9 @@ async def filter_action(query: CallbackQuery, bot: Bot, db: Storage, cfg: config
         await send_digest(bot, db, chat, cfg.limit, manual=True)
         return
     if parts[1] == "reset":
-        f.format, f.topics, f.period_days = "any", [], 0
+        f.format, f.topics, f.period_days, f.region = "any", [], 0, "ru_online"
+    elif parts[1] == "reg" and parts[2] in REGIONS:
+        f.region = parts[2]
     elif parts[1] == "fmt" and parts[2] in FORMATS:
         f.format = parts[2]
     elif parts[1] == "top" and parts[2] in TOPICS:

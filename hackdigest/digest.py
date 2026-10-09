@@ -5,10 +5,13 @@ from html import escape
 
 from hackdigest.filters import TOPICS, Filters, topics_of
 from hackdigest.models import Hackathon
+from hackdigest.text import strip_emoji
 
 TG_LIMIT = 4096
 
 SOURCE_NAMES = {
+    "hackathons_rus": "хакатоны.рус",
+    "leader_id": "Leader-ID",
     "devpost": "Devpost",
     "codenrock": "Codenrock",
     "mlh": "MLH",
@@ -16,6 +19,8 @@ SOURCE_NAMES = {
     "telegram": "Telegram-каналы",
 }
 SOURCE_LINKS = {
+    "hackathons_rus": "https://www.xn--80aa3anexr8c.xn--p1acf/",
+    "leader_id": "https://leader-id.ru/events",
     "devpost": "https://devpost.com/hackathons",
     "codenrock": "https://codenrock.com/contests",
     "mlh": "https://www.mlh.com/seasons",
@@ -105,7 +110,7 @@ class Section:
 
 
 def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
-    title = f'<a href="{escape(h.url)}"><b>{escape(h.title)}</b></a>'
+    title = f'<a href="{escape(h.url)}"><b>{escape(strip_emoji(h.title))}</b></a>'
     if is_new:
         title += " <i>— новое</i>"
     lines = [title]
@@ -134,7 +139,7 @@ def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
     lines.append(" · ".join(meta))
 
     extra = []
-    if h.reg_deadline:
+    if h.reg_deadline and h.reg_deadline >= now:
         extra.append(f"регистрация до {fmt_day(h.reg_deadline, now)}")
     topics = [TOPICS[t][0] for t in sorted(topics_of(h))]
     if topics:
@@ -144,49 +149,81 @@ def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
     return "\n".join(lines)
 
 
+def title_key(title: str) -> str:
+    """Название без года, служебных слов и пунктуации — для поиска дублей между источниками."""
+    t = re.sub(r"20\d\d|хакатон\w*|hackathon|всероссийск\w*|международн\w*", "", title.lower())
+    return re.sub(r"\W+", "", t)
+
+
+def _name_keys(title: str) -> set[str]:
+    """Ключи для поиска упоминаний: всё название и имя в «ёлочках» («Точка сборки»)."""
+    keys = {title_key(title)} | {title_key(q) for q in re.findall(r"«([^»]{4,})»", title)}
+    return {k for k in keys if len(k) >= 6}
+
+
 def select(items: list[Hackathon], filters: Filters, now: datetime) -> list[Hackathon]:
-    """Предстоящие события под фильтр, без дублей по названию, отсортированные по дате."""
-    seen_titles = set()
-    result = []
+    """Предстоящие события под фильтр, без дублей, отсортированные по ближайшей дате.
+    Анонсы из каналов о событиях, которые уже есть с сайтов, и репосты одного анонса отбрасываются."""
     far = now + timedelta(days=10_000)
-    for h in sorted(items, key=lambda h: h.start or far):
-        key = re.sub(r"\W+", "", h.title.lower())
-        if key in seen_titles or not h.is_upcoming(now) or not filters.matches(h, now):
+    sites, posts, seen = [], [], []
+    for h in sorted(items, key=lambda h: h.key_date or far):
+        if not h.is_upcoming(now) or not filters.matches(h, now):
             continue
-        seen_titles.add(key)
-        result.append(h)
-    return result
+        if h.source == "telegram":
+            posts.append(h)
+            continue
+        key = title_key(h.title)
+        # «KubSTU CTF 2026» и «KubSTU CTF 2026 Autumn Edition» — одно и то же
+        if any(key == k or (min(len(key), len(k)) >= 6 and (key.startswith(k) or k.startswith(key))) for k in seen):
+            continue
+        seen.append(key)
+        sites.append(h)
+    known = set().union(*(_name_keys(h.title) for h in sites)) if sites else set()
+    fresh_posts, post_keys = [], set()
+    for p in posts:
+        text = title_key(f"{p.title} {p.summary}")
+        own = title_key(p.title)
+        if any(k in text for k in known) or own in post_keys:
+            continue
+        post_keys.add(own)
+        fresh_posts.append(p)
+    return sites + fresh_posts
 
 
-def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, limit: int) -> tuple[list[Section], int]:
+def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, limit: int) -> list[Section]:
+    """limit — сколько событий показывать в каждой секции; остальные сворачиваются в «и ещё N»."""
     week, month, later, ongoing, posts = [], [], [], [], []
     for h in items:
+        when = h.key_date
         if h.source == "telegram":
             posts.append(h)
         elif h.start and h.start.date() < now.date():
             ongoing.append(h)
-        elif h.start and h.start <= now + timedelta(days=7):
+        elif when and when <= now + timedelta(days=7):
             week.append(h)
-        elif h.start and h.start <= now + timedelta(days=31):
+        elif when and when <= now + timedelta(days=31):
             month.append(h)
         else:
             later.append(h)
+    # сначала новые для чата анонсы
+    posts.sort(key=lambda h: h.uid not in new_uids)
 
     groups = [
-        ("Стартуют в ближайшие 7 дней", week, False),
+        ("Ближайшие 7 дней", week, False),
         ("В ближайший месяц", month, False),
         ("Уже идут, регистрация открыта", ongoing, True),
         ("Позже", later, True),
         ("Анонсы из Telegram-каналов", posts, False),
     ]
-    sections, shown = [], 0
+    sections = []
     for title, group, collapsed in groups:
-        take = group[: max(limit - shown, 0)]
-        if not take:
+        if not group:
             continue
-        shown += len(take)
-        sections.append(Section(f"{title} · {len(group)}", [format_item(h, h.uid in new_uids, now) for h in take], collapsed))
-    return sections, len(items) - shown
+        lines = [format_item(h, h.uid in new_uids, now) for h in group[:limit]]
+        if len(group) > limit:
+            lines.append(f"<i>и ещё {len(group) - limit}</i>")
+        sections.append(Section(f"{title} · {len(group)}", lines, collapsed))
+    return sections
 
 
 def build_digest(
@@ -195,7 +232,7 @@ def build_digest(
     now: datetime,
     sources: list[str],
     filters: Filters | None = None,
-    limit: int = 30,
+    limit: int = 10,
 ) -> list[str]:
     """Собирает дайджест и режет его на сообщения не длиннее лимита Telegram."""
     if not items:
@@ -209,11 +246,9 @@ def build_digest(
         summary += f". Фильтр: {escape(filters.describe())}"
     header.append(summary)
 
-    sections, hidden = build_sections(items, new_uids, now, limit)
+    sections = build_sections(items, new_uids, now, limit)
     links = [f'<a href="{SOURCE_LINKS[s]}">{SOURCE_NAMES[s]}</a>' for s in sources if s in SOURCE_LINKS]
-    footer = []
-    if hidden:
-        footer.append(f"Не поместилось ещё {hidden}. Сузить список можно через /filter.")
+    footer = ["Настроить, что попадает в дайджест: /filter"]
     if links:
         footer.append("Полные списки: " + " · ".join(links))
     return pack("\n".join(header), sections, "\n".join(footer))

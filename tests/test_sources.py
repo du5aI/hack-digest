@@ -115,3 +115,38 @@ def test_extract_dates():
     assert days("30 октября – 2 ноября онлайн") == ("2026-10-30", "2026-11-02", None)
     assert days("5 января") == ("2027-01-05", None, None)  # без года и «в прошлом» — следующий год
     assert days("без дат") == (None, None, None)
+
+
+def test_hackathons_rus_parse():
+    from hackdigest.sources import hackathons_rus
+    data = {"posts": [
+        {"uid": "a", "title": "Открой #Моспром", "date": "2026-10-21 23:00", "url": "https://x/a",
+         "parts": "Регистрация открыта,offline,Москва,DS/ML/AI",
+         "descr": "Даты: 23-25 октября 2026. Призовой фонд: 2,5 млн ₽"},
+        {"uid": "b", "title": "Закрытый", "date": "2026-10-21 23:00", "url": "u", "parts": "Регистрация закрыта"},
+    ]}
+    [h] = hackathons_rus.parse(data, now=NOW)
+    assert (h.start.day, h.end.day, h.reg_deadline.day) == (23, 25, 21)
+    assert h.online is False and h.location == "Москва" and h.tags == ("AI / ML",) and h.prize == "2,5 млн ₽"
+
+
+def test_leader_id_parse():
+    from hackdigest.sources import leader_id
+    base = {"date_start": "2026-10-22 09:30:00", "date_end": "2026-10-22 17:00:00",
+            "registration_date_end": "2026-10-20 17:00:00", "timezone": {"value": "+03:00"},
+            "format": "space", "city": "Севастополь", "themes": [{"name": "TechNet"}], "finished": False}
+    data = {"data": {"_items": [
+        {**base, "id": 1, "full_name": "Хакатон «ПриморТех»"},
+        {**base, "id": 2, "full_name": "Хакатоны как точка старта: с чего начать"},
+        {**base, "id": 3, "full_name": "Питч-сессия проектов"},
+    ]}}
+    [h] = leader_id.parse(data)
+    assert h.url == "https://leader-id.ru/events/1" and h.online is False and h.location == "Севастополь"
+    assert h.start.utcoffset().total_seconds() == 3 * 3600
+
+
+def test_telegram_announcement_heuristic():
+    assert telegram.is_announcement("Хакатон «Х». Регистрация до 20 октября")
+    assert not telegram.is_announcement("Подвели итоги хакатона, поздравляем победителей! Регистрация была большой")
+    assert not telegram.is_announcement("Открыт набор на курсы, регистрация")
+    assert telegram.clean("🔥 Хакатон 🚀") == "Хакатон"

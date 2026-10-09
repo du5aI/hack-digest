@@ -43,5 +43,5 @@ def load() -> Config:
         default_interval=interval,
         default_sources=sources,
         default_channels=channels,
-        limit=int(os.environ.get("DIGEST_LIMIT", "30")),
+        limit=int(os.environ.get("SECTION_LIMIT", "10")),
     )

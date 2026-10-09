@@ -19,6 +19,11 @@ class Hackathon:
     summary: str = ""  # короткий текст (для постов из каналов)
     via: str = ""  # где найдено: название канала и т.п.
 
+    @property
+    def key_date(self) -> datetime | None:
+        """Ближайшая значимая дата: старт, а если он неизвестен — конец регистрации."""
+        return self.start or self.reg_deadline
+
     def is_upcoming(self, now: datetime) -> bool:
         """Ещё не началось, или уже идёт, но регистрация открыта."""
         if self.reg_deadline and self.reg_deadline > now:

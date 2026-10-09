@@ -5,14 +5,16 @@ import time
 import aiohttp
 
 from hackdigest.models import Hackathon
-from hackdigest.sources import codenrock, devfolio, devpost, mlh, telegram
+from hackdigest.sources import codenrock, devfolio, devpost, hackathons_rus, leader_id, mlh, telegram
 
 log = logging.getLogger(__name__)
 
 # сайты-агрегаторы: имя -> async fetch(session) -> list[Hackathon]
 SOURCES = {
-    "devpost": devpost.fetch,
+    "hackathons_rus": hackathons_rus.fetch,
     "codenrock": codenrock.fetch,
+    "leader_id": leader_id.fetch,
+    "devpost": devpost.fetch,
     "mlh": mlh.fetch,
     "devfolio": devfolio.fetch,
 }

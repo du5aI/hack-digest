@@ -32,7 +32,7 @@ def test_migrates_old_db(tmp_path):
     old.commit()
     old.close()
     chat = Storage(str(path)).get(5)
-    assert chat.sources == ["devpost"] and chat.filters.is_empty() and chat.channels == []
+    assert chat.sources == ["devpost"] and chat.filters == Filters() and chat.channels == []
 
 
 def test_seen():

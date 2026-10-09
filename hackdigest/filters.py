@@ -21,6 +21,8 @@ TOPICS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 PERIODS = {7: "неделя", 30: "месяц", 90: "3 месяца", 0: "без ограничений"}
 FORMATS = {"any": "любой", "online": "онлайн", "offline": "офлайн"}
+REGIONS = {"ru_online": "Россия + онлайн в мире", "ru": "Россия", "world": "весь мир"}
+RU_SOURCES = {"hackathons_rus", "codenrock", "leader_id", "telegram"}
 
 
 def _pattern(word: str) -> str:
@@ -44,6 +46,7 @@ class Filters:
     format: str = "any"
     topics: list[str] = field(default_factory=list)
     period_days: int = 0
+    region: str = "ru_online"
 
     @classmethod
     def from_dict(cls, data: dict) -> "Filters":
@@ -51,18 +54,24 @@ class Filters:
             format=data.get("format", "any"),
             topics=[t for t in data.get("topics", []) if t in TOPICS],
             period_days=int(data.get("period_days", 0)),
+            region=data.get("region", "ru_online"),
         )
         if f.format not in FORMATS:
             f.format = "any"
+        if f.region not in REGIONS:
+            f.region = "ru_online"
         return f
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def is_empty(self) -> bool:
-        return self.format == "any" and not self.topics and not self.period_days
+        return self.format == "any" and not self.topics and not self.period_days and self.region == "world"
 
     def matches(self, h: Hackathon, now: datetime) -> bool:
+        if self.region != "world" and h.source not in RU_SOURCES:
+            if self.region == "ru" or h.online is not True:
+                return False
         if self.format == "online" and h.online is False:
             return False
         if self.format == "offline" and h.online is True:
@@ -74,7 +83,7 @@ class Filters:
         return True
 
     def describe(self) -> str:
-        parts = []
+        parts = [REGIONS[self.region]] if self.region != "world" else []
         if self.format != "any":
             parts.append(FORMATS[self.format])
         if self.topics:
