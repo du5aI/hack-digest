@@ -1,9 +1,12 @@
+import hashlib
 import json
 import sqlite3
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime
 
 from hackdigest.filters import Filters
+from hackdigest.models import Hackathon
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
@@ -20,6 +23,24 @@ CREATE TABLE IF NOT EXISTS seen (
     uid      TEXT    NOT NULL,
     PRIMARY KEY (chat_id, uid)
 );
+-- последние известные данные о событиях: по ним открываются карточки и приходят напоминания
+CREATE TABLE IF NOT EXISTS events (
+    eid      TEXT PRIMARY KEY,
+    data     TEXT NOT NULL,
+    updated  INTEGER NOT NULL
+);
+-- события, за которыми следит чат; sent — какие напоминания уже отправлены
+CREATE TABLE IF NOT EXISTS tracked (
+    chat_id  INTEGER NOT NULL,
+    eid      TEXT    NOT NULL,
+    sent     TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (chat_id, eid)
+);
+-- порядок строк на последнем табло чата: для кнопок с номерами и голосования
+CREATE TABLE IF NOT EXISTS boards (
+    chat_id  INTEGER PRIMARY KEY,
+    eids     TEXT NOT NULL
+);
 """
 # колонки, появившиеся после первой версии, — добавляем в старые базы
 MIGRATIONS = {
@@ -31,6 +52,32 @@ COLUMNS = "chat_id, interval_sec, next_send_at, sources, active, filters, channe
 
 def _split(value: str) -> list[str]:
     return [s for s in value.split(",") if s]
+
+
+def event_id(h: Hackathon) -> str:
+    """Короткий стабильный id события — помещается в callback_data и deep link."""
+    return hashlib.blake2s(h.uid.encode(), digest_size=5).hexdigest()
+
+
+_DATES = ("start", "end", "reg_deadline")
+WATCHED = ("start", "end", "reg_deadline", "online", "location")  # о каких изменениях стоит сообщить
+
+
+def _dump(h: Hackathon) -> str:
+    data = asdict(h)
+    for f in _DATES:
+        data[f] = data[f] and data[f].isoformat()
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _load(raw: str) -> Hackathon:
+    data = json.loads(raw)
+    known = {f.name for f in fields(Hackathon)}
+    data = {k: v for k, v in data.items() if k in known}
+    for f in _DATES:
+        data[f] = data.get(f) and datetime.fromisoformat(data[f])
+    data["tags"] = tuple(data.get("tags", ()))
+    return Hackathon(**data)
 
 
 @dataclass
@@ -119,3 +166,57 @@ class Storage:
             self.db.executemany(
                 "INSERT OR IGNORE INTO seen (chat_id, uid) VALUES (?, ?)", [(chat_id, u) for u in uids]
             )
+
+    # ---------- события, слежение, табло ----------
+
+    def save_events(self, items: list[Hackathon]) -> list[tuple[Hackathon, Hackathon]]:
+        """Запоминает события. Возвращает (было, стало) для тех, у кого сдвинулись даты или формат."""
+        changed = []
+        now = int(time.time())
+        with self.db:
+            for h in items:
+                eid = event_id(h)
+                row = self.db.execute("SELECT data FROM events WHERE eid = ?", (eid,)).fetchone()
+                if row:
+                    old = _load(row[0])
+                    if any(getattr(old, f) != getattr(h, f) for f in WATCHED):
+                        changed.append((old, h))
+                self.db.execute("INSERT OR REPLACE INTO events (eid, data, updated) VALUES (?, ?, ?)",
+                                (eid, _dump(h), now))
+        return changed
+
+    def event(self, eid: str) -> Hackathon | None:
+        row = self.db.execute("SELECT data FROM events WHERE eid = ?", (eid,)).fetchone()
+        return _load(row[0]) if row else None
+
+    def track(self, chat_id: int, eid: str, on: bool = True) -> None:
+        with self.db:
+            if on:
+                self.db.execute("INSERT OR IGNORE INTO tracked (chat_id, eid) VALUES (?, ?)", (chat_id, eid))
+            else:
+                self.db.execute("DELETE FROM tracked WHERE chat_id = ? AND eid = ?", (chat_id, eid))
+
+    def is_tracked(self, chat_id: int, eid: str) -> bool:
+        return self.db.execute("SELECT 1 FROM tracked WHERE chat_id = ? AND eid = ?", (chat_id, eid)).fetchone() is not None
+
+    def tracked(self, chat_id: int | None = None) -> list[tuple[int, Hackathon, set[str]]]:
+        """(чат, событие, отправленные напоминания) — для одного чата или для всех."""
+        sql = "SELECT t.chat_id, e.data, t.sent FROM tracked t JOIN events e ON e.eid = t.eid"
+        rows = self.db.execute(sql + " WHERE t.chat_id = ?", (chat_id,)) if chat_id is not None else self.db.execute(sql)
+        return [(r[0], _load(r[1]), set(_split(r[2]))) for r in rows]
+
+    def watchers(self, eid: str) -> list[int]:
+        return [r[0] for r in self.db.execute("SELECT chat_id FROM tracked WHERE eid = ?", (eid,))]
+
+    def mark_reminded(self, chat_id: int, eid: str, keys: set[str]) -> None:
+        with self.db:
+            self.db.execute("UPDATE tracked SET sent = ? WHERE chat_id = ? AND eid = ?",
+                            (",".join(sorted(keys)), chat_id, eid))
+
+    def set_board(self, chat_id: int, eids: list[str]) -> None:
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO boards (chat_id, eids) VALUES (?, ?)", (chat_id, ",".join(eids)))
+
+    def board(self, chat_id: int) -> list[str]:
+        row = self.db.execute("SELECT eids FROM boards WHERE chat_id = ?", (chat_id,)).fetchone()
+        return _split(row[0]) if row else []

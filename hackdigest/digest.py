@@ -1,8 +1,10 @@
 import re
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from html import escape
 
+from hackdigest.dates import MSK
 from hackdigest.filters import Filters
 from hackdigest.topics import labels, topics_of
 from hackdigest.models import Hackathon
@@ -17,6 +19,11 @@ SOURCE_NAMES = {
     "codenrock": "Codenrock",
     "mlh": "MLH",
     "devfolio": "Devfolio",
+    "changellenge": "Changellenge",
+    "dorahacks": "DoraHacks",
+    "taikai": "TAIKAI",
+    "lablab": "lablab.ai",
+    "ctftime": "CTFtime",
     "telegram": "Telegram-каналы",
 }
 SOURCE_LINKS = {
@@ -26,6 +33,11 @@ SOURCE_LINKS = {
     "codenrock": "https://codenrock.com/contests",
     "mlh": "https://www.mlh.com/seasons",
     "devfolio": "https://devfolio.co/hackathons",
+    "changellenge": "https://changellenge.com/championships/",
+    "dorahacks": "https://dorahacks.io/hackathon",
+    "taikai": "https://taikai.network/hackathons",
+    "lablab": "https://lablab.ai/ai-hackathons",
+    "ctftime": "https://ctftime.org/event/list/upcoming",
 }
 
 # ---------- интервалы ----------
@@ -86,6 +98,7 @@ MONTHS_FULL = ("января", "февраля", "марта", "апреля", "
 
 
 def fmt_day(d: datetime, now: datetime) -> str:
+    d = d.astimezone(MSK)
     s = f"{d.day} {MONTHS_SHORT[d.month - 1]}"
     return s if d.year == now.year else f"{s} {d.year}"
 
@@ -93,6 +106,7 @@ def fmt_day(d: datetime, now: datetime) -> str:
 def fmt_range(start: datetime | None, end: datetime | None, now: datetime) -> str:
     if not start:
         return ""
+    start, end = start.astimezone(MSK), end and end.astimezone(MSK)
     if not end or end.date() == start.date():
         return fmt_day(start, now)
     if (start.year, start.month) == (end.year, end.month):
@@ -108,7 +122,11 @@ class Section:
     title: str
     items: list[str]
     collapsed: bool = False  # свернуть в раскрывающуюся цитату
+    rest: list[str] = field(default_factory=list)  # не вошедшие в лимит — одной строкой каждое, свёрнуто
+    hidden: int = 0  # сколько событий не вошло в лимит
 
+URGENT = timedelta(days=3)  # регистрация закрывается скоро — событие поднимается в «Горит»
+REST_LIMIT = 40  # сколько событий показывать в свёрнутом хвосте секции
 
 def brief(h: Hackathon, limit: int = 180) -> str:
     """Первая фраза описания — о чём хакатон. Пусто, если описание просто повторяет название."""
@@ -138,7 +156,10 @@ def topics_line(h: Hackathon) -> str:
     return " · ".join(parts)
 
 
-def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
+CardUrl = Callable[[Hackathon], str]  # ссылка, открывающая карточку события в боте
+
+
+def format_item(h: Hackathon, is_new: bool, now: datetime, card_url: CardUrl | None = None) -> str:
     title = f'<a href="{escape(h.url)}"><b>{escape(strip_emoji(h.title))}</b></a>'
     if is_new:
         title += " <i>— новое</i>"
@@ -161,6 +182,8 @@ def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
             meta.append(escape(h.prize))
     if h.reg_deadline and h.reg_deadline >= now:
         meta.append(f"регистрация до {fmt_day(h.reg_deadline, now)}")
+    if card_url:
+        meta.append(f'<a href="{escape(card_url(h))}">карточка</a>')
     lines.append(" · ".join(meta))
 
     if topics := topics_line(h):
@@ -171,16 +194,35 @@ def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
     return "\n".join(lines)
 
 
+def format_line(h: Hackathon, now: datetime) -> str:
+    """Событие одной строкой — для свёрнутого хвоста секции."""
+    parts = [f'<a href="{escape(h.url)}">{escape(strip_emoji(h.title))}</a>']
+    if h.start:
+        parts.append(fmt_range(h.start, h.end, now))
+    if h.reg_deadline and h.reg_deadline >= now:
+        parts.append(f"рег. до {fmt_day(h.reg_deadline, now)}")
+    return " · ".join(parts)
+
+
 def title_key(title: str) -> str:
     """Название без года, служебных слов и пунктуации — для поиска дублей между источниками."""
     t = re.sub(r"20\d\d|хакатон\w*|hackathon|всероссийск\w*|международн\w*", "", title.lower())
     return re.sub(r"\W+", "", t)
 
 
-def _name_keys(title: str) -> set[str]:
-    """Ключи для поиска упоминаний: всё название и имя в «ёлочках» («Точка сборки»)."""
-    keys = {title_key(title)} | {title_key(q) for q in re.findall(r"«([^»]{4,})»", title)}
-    return {k for k in keys if len(k) >= 6}
+def _raw_key(text: str) -> str:
+    """Текст без пунктуации и года, но со словом «хакатон»: «О! Хакатон 2026» -> «охакатон»."""
+    return re.sub(r"20\d\d|\W+|_", "", text.lower())
+
+
+def _name_keys(title: str, min_len: int = 5) -> set[str]:
+    """Ключи для поиска упоминаний: всё название, имя в «ёлочках» («Точка сборки»),
+    а для коротких названий вроде «О! Хакатон» — название вместе со словом «хакатон»."""
+    keys = {title_key(title)} | {title_key(q) for q in re.findall(r"«([^»]{3,})»", title)}
+    keys = {k for k in keys if len(k) >= min_len}
+    if not keys and len(raw := _raw_key(title)) >= 6:
+        keys.add(raw)
+    return keys
 
 
 _MERGEABLE = ("start", "end", "reg_deadline", "online", "location", "prize", "description")
@@ -194,6 +236,11 @@ def merge(main: Hackathon, extra: Hackathon) -> Hackathon:
         updates["description"] = extra.description
     if updates.get("start") and main.end and not updates.get("end"):
         updates["end"] = extra.end  # не смешиваем начало одного источника с концом другого
+    if main.reg_deadline and extra.reg_deadline and extra.reg_deadline < main.reg_deadline:
+        updates["reg_deadline"] = extra.reg_deadline  # источники расходятся — честнее ранний дедлайн
+    if main.online and extra.online is False:
+        # один источник пишет «онлайн», другой знает город — скорее всего, событие очное
+        updates.update(online=False, location=main.location or extra.location)
     return replace(main, tags=tuple(dict.fromkeys(main.tags + extra.tags)), **updates)
 
 
@@ -210,6 +257,8 @@ def select(items: list[Hackathon], filters: Filters, now: datetime) -> list[Hack
             posts.append(h)
             continue
         key = title_key(h.title)
+        if len(key) < 4:  # «О! Хакатон» -> «о»: такой ключ ничего не значит, сравниваем название целиком
+            key = "=" + re.sub(r"20\d\d|\W+", "", h.title.lower())
         # «KubSTU CTF 2026» и «KubSTU CTF 2026 Autumn Edition» — одно и то же
         same = next((i for i, k in enumerate(seen)
                      if key == k or (min(len(key), len(k)) >= 6 and (key.startswith(k) or k.startswith(key)))), None)
@@ -222,25 +271,42 @@ def select(items: list[Hackathon], filters: Filters, now: datetime) -> list[Hack
     sites.sort(key=lambda h: h.key_date or far)
     posts = [p for p in posts if p.is_upcoming(now) and filters.matches(p, now)]
     known = set().union(*(_name_keys(h.title) for h in sites)) if sites else set()
-    fresh_posts, post_keys = [], set()
+    fresh_posts, taken = [], []  # taken — (ключи названия, текст) уже принятых анонсов
     for p in posts:
-        text = title_key(f"{p.title} {p.summary}")
-        own = title_key(p.title)
-        if any(k in text for k in known) or own in post_keys:
+        full = f"{p.title} {p.description or p.summary}"
+        text = title_key(full) + "|" + _raw_key(full)
+        own = _name_keys(p.title, 4)
+        # тот же хакатон уже есть с сайта или в другом канале (репост, анонс от вуза-партнёра)
+        if any(k in text for k in known) or any(k in t or any(o in text for o in keys)
+                                                for keys, t in taken for k in own):
             continue
-        post_keys.add(own)
+        taken.append((own, text))
         fresh_posts.append(p)
     return sites + fresh_posts
 
 
-def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, limit: int) -> list[Section]:
+def board_order(items: list[Hackathon], now: datetime) -> list[Hackathon]:
+    """События для табло: только с датами, по ближайшему действию — старту или концу регистрации."""
+    far = now + timedelta(days=10_000)
+
+    def next_moment(h: Hackathon) -> datetime:
+        return min((d for d in (h.start, h.reg_deadline) if d and d >= now), default=far)
+
+    dated = [h for h in items if (h.start or h.reg_deadline) and next_moment(h) < far]
+    return sorted(dated, key=next_moment)
+
+
+def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, limit: int,
+                   card_url: CardUrl | None = None) -> list[Section]:
     """limit — сколько событий показывать в каждой секции; остальные сворачиваются в «и ещё N»."""
-    week, month, later, ongoing, posts = [], [], [], [], []
+    urgent, week, month, later, ongoing, posts = [], [], [], [], [], []
     for h in items:
         when = h.key_date
-        if h.source == "telegram":
+        if h.reg_deadline and now <= h.reg_deadline <= now + URGENT:
+            urgent.append(h)
+        elif h.source == "telegram":
             posts.append(h)
-        elif h.start and h.start.date() < now.date():
+        elif h.start and h.start.astimezone(MSK).date() < now.astimezone(MSK).date():
             ongoing.append(h)
         elif when and when <= now + timedelta(days=7):
             week.append(h)
@@ -250,8 +316,10 @@ def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, li
             later.append(h)
     # сначала новые для чата анонсы
     posts.sort(key=lambda h: h.uid not in new_uids)
+    urgent.sort(key=lambda h: h.reg_deadline)
 
     groups = [
+        ("Горит: регистрация закрывается в ближайшие 3 дня", urgent, False),
         ("Ближайшие 7 дней", week, False),
         ("В ближайший месяц", month, False),
         ("Уже идут, регистрация открыта", ongoing, True),
@@ -262,10 +330,11 @@ def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, li
     for title, group, collapsed in groups:
         if not group:
             continue
-        lines = [format_item(h, h.uid in new_uids, now) for h in group[:limit]]
-        if len(group) > limit:
-            lines.append(f"<i>и ещё {len(group) - limit}</i>")
-        sections.append(Section(f"{title} · {len(group)}", lines, collapsed))
+        lines = [format_item(h, h.uid in new_uids, now, card_url) for h in group[:limit]]
+        rest = [format_line(h, now) for h in group[limit:limit + REST_LIMIT]]
+        if len(group) > limit + REST_LIMIT:
+            rest.append(f"<i>и ещё {len(group) - limit - REST_LIMIT}</i>")
+        sections.append(Section(f"{title} · {len(group)}", lines, collapsed, rest, max(len(group) - limit, 0)))
     return sections
 
 
@@ -276,6 +345,8 @@ def build_digest(
     sources: list[str],
     filters: Filters | None = None,
     limit: int = 10,
+    failed: list[str] = (),
+    card_url: CardUrl | None = None,
 ) -> list[str]:
     """Собирает дайджест и режет его на сообщения не длиннее лимита Telegram."""
     if not items:
@@ -289,9 +360,13 @@ def build_digest(
         summary += f". Фильтр: {escape(filters.describe())}"
     header.append(summary)
 
-    sections = build_sections(items, new_uids, now, limit)
+    sections = build_sections(items, new_uids, now, limit, card_url)
     links = [f'<a href="{SOURCE_LINKS[s]}">{SOURCE_NAMES[s]}</a>' for s in sources if s in SOURCE_LINKS]
-    footer = ["Настроить, что попадает в дайджест: /filter"]
+    footer = []
+    if failed:
+        footer.append("<i>Не ответили: " + ", ".join(SOURCE_NAMES.get(s, s) for s in failed)
+                      + " — их событий в этот раз может не хватать</i>")
+    footer.append("Настроить, что попадает в дайджест: /filter")
     if links:
         footer.append("Полные списки: " + " · ".join(links))
     return pack("\n".join(header), sections, "\n".join(footer))
@@ -311,22 +386,25 @@ def pack(header: str, sections: list[Section], footer: str) -> list[str]:
         else:
             current = candidate
 
+    def chunked(lines: list[str], sep: str, overhead: int) -> list[str]:
+        chunks, buf = [], []
+        for line in lines:
+            if buf and overhead + len(sep.join([*buf, line])) > TG_LIMIT:
+                chunks.append(sep.join(buf))
+                buf = []
+            buf.append(line)
+        return [*chunks, sep.join(buf)] if buf else chunks
+
     for sec in sections:
         title = f"<b>{escape(sec.title)}</b>"
-        chunks, buf = [], []
-        overhead = len(title) + 40
-        for item in sec.items:
-            if buf and overhead + len("\n\n".join([*buf, item])) > TG_LIMIT:
-                chunks.append(buf)
-                buf = []
-            buf.append(item)
-        if buf:
-            chunks.append(buf)
-        for i, chunk in enumerate(chunks):
-            body = "\n\n".join(chunk)
+        for i, body in enumerate(chunked(sec.items, "\n\n", len(title) + 40)):
             if sec.collapsed:
                 body = f"<blockquote expandable>{body}</blockquote>"
             push(f"{title}\n{body}" if i == 0 else body)
+        if sec.rest:
+            for i, body in enumerate(chunked(sec.rest, "\n", 80)):
+                head = f"<i>Ещё {sec.hidden} — нажмите, чтобы раскрыть</i>\n" if i == 0 else ""
+                push(f"{head}<blockquote expandable>{body}</blockquote>")
     if footer:
         push(footer)
     if current:

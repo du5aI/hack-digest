@@ -2,7 +2,8 @@ import json
 from datetime import datetime, timezone
 
 from hackdigest.dates import extract_dates
-from hackdigest.sources import codenrock, devfolio, devpost, mlh, telegram
+from hackdigest.sources import (changellenge, codenrock, ctftime, devfolio, devpost, dorahacks, lablab, mlh, taikai,
+                                telegram)
 
 NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)
 
@@ -160,3 +161,149 @@ def test_leader_id_description():
     info = json.dumps({"blocks": [{"data": {"text": "Хакатон <b>для студентов</b>&nbsp;вузов"}}, {"type": "x"}]})
     assert leader_id._description(info) == "Хакатон для студентов вузов"
     assert leader_id._description("not json") == ""
+
+
+def test_telegram_recap_vs_prize_wording():
+    ann = "Альфа-Будущее Хакатон\nРегистрация до 18 октября. Призовой фонд 3 млн ₽, фаст-трек для победителей"
+    assert telegram.is_announcement(ann)
+    assert not telegram.is_announcement("Наши студенты — победители хакатона Московского транспорта\nрегистрация")
+
+
+def test_telegram_roundup_split():
+    text = ("Дедлайны ближайших хакатонов\n\nдо 08.10 — Old Hack\nold.devpost.com\n\n"
+            "до 16.10 — О!Хакатон 2026\nhackrus.ru/1294\n\nдо 23.10 — Amazon Hackathon\namazon.devpost.com")
+    items = telegram.parse_roundup(text, "chan/5", "Канал", NOW)
+    assert [h.title for h in items] == ["О!Хакатон 2026", "Amazon Hackathon"]  # прошедший дедлайн отброшен
+    assert items[0].url == "https://hackrus.ru/1294"
+    assert items[0].reg_deadline.isoformat() == "2026-10-16T23:59:00+03:00"
+
+
+def test_telegram_title_from_lowercase_post():
+    assert telegram._title("дорогая, увольняйся с работы\nэто наш сезон Changellenge >> Hack & Change") == "Hack & Change"
+    assert telegram._title("Продолжите фразу: хакатон — это…\nХакатоны PROD") == "Хакатоны PROD"
+
+
+def test_deadline_lasts_whole_moscow_day():
+    _, _, deadline = extract_dates("Регистрация до 27 октября", NOW)
+    assert deadline.isoformat() == "2026-10-27T23:59:00+03:00"
+
+
+def test_codenrock_eastern_midnight_and_format():
+    [h] = codenrock.parse({"contests": [contest(startDate="2026-10-19T19:00:00.000Z",
+                                                description="Офлайн-хакатон в Нижнем Новгороде")]}, now=NOW)
+    assert h.start.isoformat() == "2026-10-20T00:00:00+03:00"
+    assert h.online is False
+
+
+def test_guess_online():
+    from hackdigest.text import guess_online
+    assert guess_online("Онлайн-хакатон для студентов") is True
+    assert guess_online("Отбор онлайн, очный финал в Москве") is False
+    assert guess_online("Хакатон по ML") is None
+
+
+def ts(*args):
+    return int(datetime(*args, tzinfo=timezone.utc).timestamp())
+
+
+def test_dorahacks_parse():
+    base = {"owner": {"name": "WEEX"}, "timeline_start": ts(2026, 10, 1), "timeline_end": ts(2026, 10, 20),
+            "venue_form": "Virtual", "bonus_price": 200000, "bonus_token": "USD", "tags": "AI, Web3", "hackers_count": 9}
+    data = {"results": [
+        {**base, "id": 1, "uname": "wars", "title": " AI Wars "},
+        {**base, "id": 2, "uname": "wars-cn", "title": "AI Wars 中文"},  # тот же хакатон на другом языке
+        {"id": 3, "uname": None, "title": "IRL", "owner": {"name": "Uni"}, "timeline_start": ts(2026, 11, 1),
+         "timeline_end": ts(2026, 11, 2), "venue_form": "IRL", "venue_name": "Campus", "bonus_price": 0},
+        {**base, "id": 4, "owner": None, "timeline_end": ts(2026, 10, 1)},  # уже закончился
+    ]}
+    wars, irl = dorahacks.parse(data, now=NOW)
+    assert wars.title == "AI Wars" and wars.url == "https://dorahacks.io/hackathon/wars"
+    assert wars.online is True and wars.prize == "$200,000" and wars.tags == ("AI", "Web3")
+    assert wars.reg_deadline == wars.end and wars.organizer == "WEEX" and wars.participants == 9
+    assert irl.url == "https://dorahacks.io/hackathon/3" and irl.online is False and irl.location == "Campus"
+    assert irl.reg_deadline is None and irl.prize == "" and irl.participants is None
+
+
+def test_ctftime_parse():
+    base = {"start": "2026-10-17T09:00:00+00:00", "finish": "2026-10-18T21:00:00+00:00", "onsite": False,
+            "location": "", "format": "Jeopardy", "weight": 0.0, "participants": 3, "restrictions": "Open",
+            "organizers": [{"name": "Team"}], "description": "pwn, web"}
+    data = [
+        {**base, "id": 1, "title": "Rated CTF", "weight": 85.1, "ctftime_url": "https://ctftime.org/event/1/"},
+        {**base, "id": 2, "title": "Tiny CTF"},  # без рейтинга и почти без команд — шум
+        {**base, "id": 3, "title": "Russian CTF Cup Qualifier"},
+        {**base, "id": 4, "title": "Finals", "weight": 50, "restrictions": "Prequalified"},
+        {**base, "id": 5, "title": "Popular", "participants": 40, "onsite": True, "location": "Bali"},
+    ]
+    rated, ru, onsite = ctftime.parse(data, now=NOW)
+    assert rated.url == "https://ctftime.org/event/1/" and rated.tags == ("CTF", "Jeopardy")
+    assert rated.online is True and rated.organizer == "Team" and rated.participants == 3
+    assert ru.uid == "ctftime:3" and ru.url == "https://ctftime.org/event/3/"
+    assert onsite.online is False and onsite.location == "Bali"
+
+
+def test_taikai_parse():
+    def ch(**kw):
+        base = {"id": "a", "name": "Space Hack", "slug": "space", "isClosed": False, "prize": 9000,
+                "prizeCurrency": {"name": "EUR"}, "organization": {"slug": "cassini", "name": "CASSINI"},
+                "participantsCount": 176, "industries": [{"title": "Space"}], "shortDescription": "Build for space",
+                "steps": [{"name": "Registrations open", "startDate": "2026-09-28T00:00:00.000Z"},
+                          {"name": " Registration Deadline", "startDate": "2026-11-20T00:00:00.000Z"},
+                          {"name": "Hackathon Weekend", "startDate": "2026-11-27T00:00:00.000Z"},
+                          {"name": "Awards", "startDate": "2026-12-02T00:00:00.000Z"}]}
+        return {**base, **kw}
+    data = {"data": {"challenges": [
+        ch(),
+        ch(id="closed", isClosed=True),
+        ch(id="past", steps=[{"name": "Results", "startDate": "2026-09-01T00:00:00.000Z"}]),
+        ch(id="irl", prize=0, shortDescription="In-person hackathon in Porto",
+           steps=[{"name": "Registration", "startDate": "2026-09-01T00:00:00.000Z"},
+                  {"name": "Development", "startDate": "2026-10-19T00:00:00.000Z"}]),
+    ]}}
+    h, irl = taikai.parse(data, now=NOW)
+    assert h.url == "https://taikai.network/cassini/hackathons/space" and h.prize == "€9,000"
+    assert h.start == datetime(2026, 11, 27, tzinfo=timezone.utc) and h.end.day == 2
+    assert h.reg_deadline == datetime(2026, 11, 20, tzinfo=timezone.utc)
+    assert h.online is True and h.organizer == "CASSINI" and h.participants == 176 and h.tags == ("Space",)
+    # дедлайна нет — регистрация открыта до старта
+    assert irl.reg_deadline == irl.start and irl.online is False and irl.prize == ""
+
+
+def test_lablab_parse():
+    events = {"sortedEvents": [
+        {"id": "1", "name": "Agent Rush", "slug": "agent-rush", "type": "HACKATHON", "eventType": "HYBRID",
+         "startAt": "2026-11-03T15:00:00.000Z", "endAt": "2026-11-08T22:00:00.000Z", "signupActive": True,
+         "description": "Build agents", "_count": {"participants": 688},
+         "technologyList": [{"techName": "Vultr"}]},
+        {"id": "2", "name": "League", "slug": "league", "type": "HACKATHON", "eventType": "ONLINE",
+         "startAt": "2026-09-01T19:00:00.000Z", "endAt": "2026-12-01T19:00:00.000Z", "signupActive": True},
+        {"id": "3", "name": "Old", "slug": "old", "type": "HACKATHON", "eventType": "ONLINE",
+         "startAt": "2026-08-01T00:00:00.000Z", "endAt": "2026-08-03T00:00:00.000Z"},
+        {"id": "4", "name": "Meetup", "slug": "m", "type": "EVENT", "endAt": "2026-12-01T00:00:00.000Z"},
+    ], "technologyListData": []}
+    stream = '0:["$","div",null,' + json.dumps(events) + "]"
+    # поток Next.js приходит кусками, разрезанными в произвольном месте
+    pushes = "".join(f"<script>self.__next_f.push([1,{json.dumps(stream[i:i + 50])}])</script>"
+                     for i in range(0, len(stream), 50))
+    rush, league = lablab.parse(f"<html>{pushes}</html>", now=NOW)
+    assert rush.url == "https://lablab.ai/ai-hackathons/agent-rush" and rush.online is True
+    assert rush.tags == ("AI", "Vultr") and rush.participants == 688 and rush.reg_deadline is None
+    assert league.reg_deadline == league.end  # уже идёт, но записаться можно
+
+
+def test_changellenge_parse():
+    def card(code, title, descr, chip, href=None):
+        return (f'<article class="champ-card" data-code="{code}"><p class="champ-card__company">Changellenge &gt;&gt;</p>'
+                f'<h3 class="champ-card__title"><a href="{href or f"/championships/{code}/?src=chemp"}">{title}</a></h3>'
+                f'<p class="champ-card__descr">{descr}</p><span class="champ-card__chip">{chip}</span></article>')
+    page = "".join([
+        card("hack", "Хакатон Hack&amp;Change 2026", "Онлайн-хакатон по веб-разработке и ИИ", "09 ноября"),
+        card("cup", "Changellenge &gt;&gt; Cup Moscow 2026", "Бизнес-кейсы от компаний-партнеров", "26 октября"),
+        card("mts", "MTC Engineer Hack", "Задачи инженеров", "30 сентября"),
+        card("alfa", "Альфа-Будущее Хакатон", "", "19 октября", href="https://alfa.example/hack?utm=1"),
+    ])
+    hack, alfa = changellenge.parse(page, now=NOW)
+    assert hack.url == "https://changellenge.com/championships/hack/" and hack.title == "Хакатон Hack&Change 2026"
+    assert (hack.start.month, hack.start.day, hack.start.year) == (11, 9, 2026) and hack.online is True
+    assert hack.organizer == "Changellenge"
+    assert alfa.url == "https://alfa.example/hack?utm=1" and alfa.online is None

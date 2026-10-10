@@ -8,7 +8,7 @@ from hackdigest.topics import GROUPS, TOPICS, topics_of
 PERIODS = {7: "неделя", 30: "месяц", 90: "3 месяца", 0: "без ограничений"}
 FORMATS = {"any": "любой", "online": "онлайн", "offline": "офлайн"}
 REGIONS = {"ru_online": "Россия + онлайн в мире", "ru": "Россия", "world": "весь мир"}
-RU_SOURCES = {"hackathons_rus", "codenrock", "leader_id", "telegram"}
+RU_SOURCES = {"hackathons_rus", "codenrock", "leader_id", "changellenge", "telegram"}
 
 
 @dataclass
