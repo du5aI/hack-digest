@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from html import escape
@@ -145,7 +146,10 @@ def topics_line(h: Hackathon) -> str:
     return " · ".join(parts)
 
 
-def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
+CardUrl = Callable[[Hackathon], str]  # ссылка, открывающая карточку события в боте
+
+
+def format_item(h: Hackathon, is_new: bool, now: datetime, card_url: CardUrl | None = None) -> str:
     title = f'<a href="{escape(h.url)}"><b>{escape(strip_emoji(h.title))}</b></a>'
     if is_new:
         title += " <i>— новое</i>"
@@ -168,6 +172,8 @@ def format_item(h: Hackathon, is_new: bool, now: datetime) -> str:
             meta.append(escape(h.prize))
     if h.reg_deadline and h.reg_deadline >= now:
         meta.append(f"регистрация до {fmt_day(h.reg_deadline, now)}")
+    if card_url:
+        meta.append(f'<a href="{escape(card_url(h))}">карточка</a>')
     lines.append(" · ".join(meta))
 
     if topics := topics_line(h):
@@ -269,7 +275,19 @@ def select(items: list[Hackathon], filters: Filters, now: datetime) -> list[Hack
     return sites + fresh_posts
 
 
-def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, limit: int) -> list[Section]:
+def board_order(items: list[Hackathon], now: datetime) -> list[Hackathon]:
+    """События для табло: только с датами, по ближайшему действию — старту или концу регистрации."""
+    far = now + timedelta(days=10_000)
+
+    def next_moment(h: Hackathon) -> datetime:
+        return min((d for d in (h.start, h.reg_deadline) if d and d >= now), default=far)
+
+    dated = [h for h in items if (h.start or h.reg_deadline) and next_moment(h) < far]
+    return sorted(dated, key=next_moment)
+
+
+def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, limit: int,
+                   card_url: CardUrl | None = None) -> list[Section]:
     """limit — сколько событий показывать в каждой секции; остальные сворачиваются в «и ещё N»."""
     urgent, week, month, later, ongoing, posts = [], [], [], [], [], []
     for h in items:
@@ -302,7 +320,7 @@ def build_sections(items: list[Hackathon], new_uids: set[str], now: datetime, li
     for title, group, collapsed in groups:
         if not group:
             continue
-        lines = [format_item(h, h.uid in new_uids, now) for h in group[:limit]]
+        lines = [format_item(h, h.uid in new_uids, now, card_url) for h in group[:limit]]
         rest = [format_line(h, now) for h in group[limit:limit + REST_LIMIT]]
         if len(group) > limit + REST_LIMIT:
             rest.append(f"<i>и ещё {len(group) - limit - REST_LIMIT}</i>")
@@ -318,6 +336,7 @@ def build_digest(
     filters: Filters | None = None,
     limit: int = 10,
     failed: list[str] = (),
+    card_url: CardUrl | None = None,
 ) -> list[str]:
     """Собирает дайджест и режет его на сообщения не длиннее лимита Telegram."""
     if not items:
@@ -331,7 +350,7 @@ def build_digest(
         summary += f". Фильтр: {escape(filters.describe())}"
     header.append(summary)
 
-    sections = build_sections(items, new_uids, now, limit)
+    sections = build_sections(items, new_uids, now, limit, card_url)
     links = [f'<a href="{SOURCE_LINKS[s]}">{SOURCE_NAMES[s]}</a>' for s in sources if s in SOURCE_LINKS]
     footer = []
     if failed:
