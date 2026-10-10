@@ -121,20 +121,18 @@ cd webapp && python -m http.server 8000   # затем откройте http://l
 
 ## Запуск
 
-1. Создайте бота у [@BotFather](https://t.me/BotFather) и получите токен.
-2. `cp .env.example .env` и впишите `BOT_TOKEN`.
+**Локально (Python 3.11+), проще всего:**
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python3 -m hackdigest.setup   # спросит токен от @BotFather, проверит его и запишет .env
+python3 -m hackdigest.bot
+```
+Мастер настройки сам подставит адрес Mini App из адреса репозитория на GitHub. Бот читает `.env` при запуске сам, а значения из файла важнее переменных, оставшихся в терминале. Если токен неверный, бот так и напишет, без длинной трассировки. В следующий раз хватит двух команд: `source .venv/bin/activate` и `python3 -m hackdigest.bot`.
 
-**Через Docker:**
+**Через Docker:** создайте `.env` мастером (как выше) или вручную из `.env.example` и запустите:
 ```bash
 docker compose up -d --build
-```
-
-**Локально (Python 3.11+):**
-```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-export $(grep -v '^#' .env | xargs) DB_PATH=hackdigest.db
-python -m hackdigest.bot
 ```
 
 ## Переменные окружения

@@ -1,5 +1,7 @@
 import os
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from hackdigest.digest import parse_interval
 from hackdigest.sources import SOURCES
@@ -19,15 +21,52 @@ class Config:
     webapp_url: str = ""  # адрес Mini App; если задан, дайджест — это табло и кнопка вместо текста
 
 
+TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,}$")
+
+
+def read_dotenv(path: str | Path = ".env") -> dict[str, str]:
+    """KEY=VALUE из файла; пустые строки и строки с # пропускаются, кавычки вокруг значения снимаются."""
+    values = {}
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return values
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip().removeprefix("export ").strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if re.fullmatch(r"[A-Z_][A-Z0-9_]*", key):
+            values[key] = value
+    return values
+
+
+def load_dotenv(path: str | Path = ".env") -> None:
+    """Значения из .env важнее переменных, оставшихся в терминале от прошлых запусков."""
+    os.environ.update(read_dotenv(path))
+
+
+def mask(token: str) -> str:
+    return f"{token[:6]}…{token[-2:]}" if len(token) > 10 else "…"
+
+
 def _list(name: str, default: list[str]) -> list[str]:
     raw = os.environ.get(name)
     return default if raw is None else [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def load() -> Config:
-    token = os.environ.get("BOT_TOKEN")
+    load_dotenv()
+    token = os.environ.get("BOT_TOKEN", "").strip()
     if not token:
-        raise SystemExit("Не задана переменная окружения BOT_TOKEN (токен от @BotFather)")
+        raise SystemExit("Нет BOT_TOKEN. Запустите мастер настройки: python3 -m hackdigest.setup")
+    if not TOKEN_RE.match(token):
+        raise SystemExit(f"BOT_TOKEN выглядит неправильно ({mask(token)}, длина {len(token)}): токен от @BotFather "
+                         "похож на 123456789:AAH… и длиной около 46 символов. "
+                         "Запустите мастер настройки: python3 -m hackdigest.setup")
     interval = parse_interval(os.environ.get("DEFAULT_INTERVAL", "7d"))
     if interval is None:
         raise SystemExit("DEFAULT_INTERVAL должен выглядеть как 12h, 3d или 1w (не меньше часа)")

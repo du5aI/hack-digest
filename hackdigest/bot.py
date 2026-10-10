@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramUnauthorizedError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineKeyboardButton,
                            InlineKeyboardMarkup, LinkPreviewOptions, MenuButtonWebApp, Message, WebAppInfo)
@@ -595,6 +595,13 @@ async def main() -> None:
     cfg = config_module.load()
     db = Storage(cfg.db_path)
     bot = Bot(cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        me = await bot.me()
+    except TelegramUnauthorizedError:
+        await bot.session.close()
+        raise SystemExit(f"Telegram не принял токен {config_module.mask(cfg.bot_token)}. Возьмите актуальный в @BotFather "
+                         "(/mybots → бот → API Token) и запустите: python3 -m hackdigest.setup")
+    log.info("Бот @%s запущен. Mini App: %s", me.username, cfg.webapp_url or "не задан (дайджест текстом)")
     dp = Dispatcher()
     dp.include_router(router)
     dp["db"] = db
