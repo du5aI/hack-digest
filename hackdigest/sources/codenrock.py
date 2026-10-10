@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
+from hackdigest.dates import MSK
 from hackdigest.models import Hackathon
+from hackdigest.text import guess_online
 
 API_URL = "https://codenrock.com/api/contests"
 LIST_URL = "https://codenrock.com/contests"
@@ -17,6 +19,16 @@ def _dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _day(value: str | None) -> datetime | None:
+    """Дата проведения. Организаторы с востока ставят полночь своего часового пояса — по Москве это
+    поздний вечер предыдущего дня («4 окт 22:00» вместо «5 окт»), поэтому такие времена округляем вперёд."""
+    d = _dt(value)
+    if d is None:
+        return None
+    d = d.astimezone(MSK)
+    return (d + timedelta(days=1)).replace(hour=0, minute=0, second=0) if d.hour >= 20 else d
+
+
 def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
     """Возвращает предстоящие соревнования: ещё не начались или открыта регистрация."""
     now = now or datetime.now(timezone.utc)
@@ -24,7 +36,7 @@ def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
     for c in data.get("contests", []):
         if c.get("status") != "active" or c.get("type") not in TYPES:
             continue
-        start, end, reg_end = _dt(c.get("startDate")), _dt(c.get("endDate")), _dt(c.get("endRegistration"))
+        start, end, reg_end = _day(c.get("startDate")), _day(c.get("endDate")), _dt(c.get("endRegistration"))
         registration_open = reg_end is not None and reg_end > now
         if not registration_open and (start is None or start <= now):
             continue
@@ -38,6 +50,7 @@ def parse(data: dict, now: datetime | None = None) -> list[Hackathon]:
                 start=start,
                 end=end,
                 reg_deadline=reg_end if registration_open else None,
+                online=guess_online(c.get("description") or ""),
                 prize=(c.get("prizes") or "").strip(),
                 description=(c.get("description") or "").strip(),
                 tags=(tag,) if tag else (),

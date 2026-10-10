@@ -44,18 +44,18 @@ HELP = (
 
 async def collect(chat: Chat, db: Storage):
     now = datetime.now(timezone.utc)
-    raw = await fetch_all(chat.sources, chat.channels)
+    raw, failed = await fetch_all(chat.sources, chat.channels)
     items = select(raw, chat.filters, now)
     uids = [h.uid for h in items]
     new = db.unseen(chat.chat_id, uids)
     if len(new) == len(uids):  # первый дайджест: «новым» было бы всё, пометки ничего не дают
         new = set()
-    return now, items, new
+    return now, items, new, failed
 
 
 async def send_digest(bot: Bot, db: Storage, chat: Chat, limit: int, manual: bool = False,
                       with_text: bool = True) -> None:
-    now, items, new = await collect(chat, db)
+    now, items, new, failed = await collect(chat, db)
     if not items:
         if manual:
             await bot.send_message(chat.chat_id, "Под текущий фильтр ничего не нашлось. Ослабить его можно в /filter.")
@@ -64,7 +64,7 @@ async def send_digest(bot: Bot, db: Storage, chat: Chat, limit: int, manual: boo
     if png:
         await bot.send_photo(chat.chat_id, BufferedInputFile(png, "timeline.png"))
     if with_text:
-        for text in build_digest(items, new, now, chat.sources, chat.filters, limit=limit):
+        for text in build_digest(items, new, now, chat.sources, chat.filters, limit=limit, failed=failed):
             await bot.send_message(chat.chat_id, text, link_preview_options=NO_PREVIEW)
         db.mark_seen(chat.chat_id, [h.uid for h in items])
     elif not png and manual:
@@ -326,7 +326,12 @@ async def filter_action(query: CallbackQuery, bot: Bot, db: Storage, cfg: config
 
 async def scheduler(bot: Bot, db: Storage, cfg: config_module.Config) -> None:
     while True:
-        for chat in db.due():
+        try:
+            chats = db.due()
+        except Exception:  # без этого одна ошибка базы молча остановила бы все рассылки
+            log.exception("Планировщик: не удалось прочитать подписки")
+            chats = []
+        for chat in chats:
             # переносим следующий запуск заранее, чтобы ошибка отправки не приводила к спаму каждую минуту
             db.schedule_next(chat)
             try:

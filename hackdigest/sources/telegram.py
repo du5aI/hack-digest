@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from hackdigest.dates import extract_dates
 from hackdigest.models import Hackathon
-from hackdigest.text import _EMOJI
+from hackdigest.text import _EMOJI, guess_online
 
 # Агрегаторы почти целиком состоят из анонсов — читаем их ленту.
 AGGREGATORS = [
@@ -46,8 +46,13 @@ STRONG = re.compile(r"хакатон|hackathon|геймджем|game ?jam|datath
                     r"|кейс-чемпионат|чемпионат по программированию", re.IGNORECASE)
 SIGNALS = re.compile(r"регистрац|зарегистр|подать заявку|заявк[иу]|дедлайн|призов\w* фонд|₽|руб|\$|"
                      r"даты проведения|когда:|формат:|онлайн|офлайн|участ", re.IGNORECASE)
-RECAP = re.compile(r"итоги|победител|подвели|состоял|прош[её]л(?! отбор)|вебинар|рассказыва", re.IGNORECASE)
-MAX_AGE = timedelta(days=21)  # посты старше не берём
+# итоги и рассказы о прошедшем; просто «победители получат…» в анонсе — не итоги
+RECAP = re.compile(r"итоги|победител\w* (?:хакатона|стали|определ|объявлен)|поздрав\w* победител|(?:стали|наши \w+ —) победител"
+                   r"|подвели|наградили|состоял|прош[её]л(?! отбор)|вебинар|рассказыва", re.IGNORECASE)
+NOT_EVENT = re.compile(r"курс|вакансi|ваканси|подкаст|стажировк|интенсив", re.IGNORECASE)
+MAX_AGE = timedelta(days=45)  # посты старше не берём; у оставшихся ещё должна быть дата в будущем
+# строка сводки дедлайнов: «до 16.10 — О!Хакатон 2026», следом ссылка
+_ROUNDUP_LINE = re.compile(r"^до\s+(\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)\s*[—–-]\s*(.{3,120})$", re.IGNORECASE)
 RETRIES = 3
 
 
@@ -75,8 +80,34 @@ def _is_hashtags(line: str) -> bool:
 
 
 def _title(text: str) -> str:
-    first = next((line.strip() for line in text.splitlines() if line.strip() and not _is_hashtags(line.strip())), "")
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not _is_hashtags(line.strip())]
+    # заголовок поста — короткая строка с заглавной буквы, а не вопрос или зачин истории
+    first = next((line for line in lines[:5] if len(line) <= 100 and (line[0].isupper() or line[0] in "«\"")
+                  and not line.endswith(("?", "…"))), lines[0] if lines else "")
+    if first and first[0].islower():
+        # пост без заголовка, со строчной буквы: берём имя события — «Точка сборки», Hack&Change
+        name = re.search(r"«([^»]{3,60})»|\b((?:[A-Z][\w!]*\s*(?:&|x|×)\s*)?Hack\w*(?:\s*&\s*[A-Z]\w+)?)", text)
+        if name:
+            first = name[1] or name[2]
     return first if len(first) <= 120 else first[:119].rstrip() + "…"
+
+
+def parse_roundup(text: str, post: str, via: str, now: datetime) -> list[Hackathon]:
+    """Пост-сводка «до 16.10 — Название / ссылка» — каждая строка становится отдельным событием."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    items = []
+    for i, line in enumerate(lines):
+        m = _ROUNDUP_LINE.match(line)
+        if not m:
+            continue
+        _, _, deadline = extract_dates(f"до {m[1]}", now)
+        if not deadline or deadline < now:
+            continue
+        link = lines[i + 1] if i + 1 < len(lines) and re.match(r"(https?://)?[\w-]+(\.[\w-]+)+/?\S*$", lines[i + 1]) else ""
+        url = (link if link.startswith("http") else f"https://{link}") if link else f"https://t.me/{post}"
+        items.append(Hackathon(uid=f"telegram:{post}#{i}", source="telegram", title=m[2].strip(), url=url,
+                               reg_deadline=deadline, summary="", via=via))
+    return items
 
 
 def _summary(text: str, title: str) -> str:
@@ -109,14 +140,22 @@ def parse(html: str, channel: str, now: datetime | None = None) -> list[Hackatho
         for br in text_tag.find_all("br"):
             br.replace_with("\n")
         text = clean(text_tag.get_text())
+        if sum(bool(_ROUNDUP_LINE.match(line.strip())) for line in text.splitlines()) >= 3:
+            items += parse_roundup(text, msg["data-post"], channel_title, now)
+            continue
         if not is_announcement(text):
             continue
         start, end, deadline = extract_dates(text, posted)
         if not start and not deadline:
             continue  # в анонсе всегда есть даты; без них это скорее статья или история
-        if (end or start) and (end or start) < now and not (deadline and deadline > now):
+        if deadline and deadline < now:
+            continue  # регистрация уже закрыта
+        last_day = end or (start and start.replace(hour=23, minute=59))
+        if last_day and last_day < now and not deadline:
             continue  # событие из поста уже прошло
         title = _title(text)
+        if NOT_EVENT.search(title) and not STRONG.search(title):
+            continue  # курс или вакансия, где хакатон — лишь часть программы
         items.append(Hackathon(
             uid=f"telegram:{msg['data-post']}",
             source="telegram",
@@ -125,6 +164,7 @@ def parse(html: str, channel: str, now: datetime | None = None) -> list[Hackatho
             start=start,
             end=end,
             reg_deadline=deadline if deadline and deadline > now else None,
+            online=guess_online(text),
             summary=_summary(text, title),
             description=text,
             via=channel_title,

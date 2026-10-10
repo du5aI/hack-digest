@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from hackdigest.dates import MSK
+
 
 @dataclass(frozen=True)
 class Hackathon:
@@ -19,6 +21,8 @@ class Hackathon:
     summary: str = ""  # короткий текст (для постов из каналов)
     description: str = ""  # описание из источника: по нему определяется тематика и «о чём»
     via: str = ""  # где найдено: название канала и т.п.
+    organizer: str = ""
+    participants: int | None = None  # сколько уже зарегистрировалось, если источник это сообщает
 
     @property
     def key_date(self) -> datetime | None:
@@ -29,6 +33,6 @@ class Hackathon:
         """Ещё не началось, или уже идёт, но регистрация открыта."""
         if self.reg_deadline and self.reg_deadline > now:
             return True
-        if self.start:
-            return self.start.date() >= now.date()
+        if self.start:  # начинается сегодня по Москве — ещё показываем
+            return self.start.astimezone(MSK).date() >= now.astimezone(MSK).date()
         return self.end is None or self.end > now

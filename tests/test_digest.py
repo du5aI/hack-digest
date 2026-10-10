@@ -60,7 +60,9 @@ def test_digest_splits_long():
     assert len(msgs) > 1
     assert all(len(m) <= TG_LIMIT for m in msgs)
     short = build_digest(items, set(), NOW, ["devpost"], limit=10)
-    assert len(short) == 1 and "и ещё 190" in short[0]
+    text = "\n".join(short)
+    assert "Ещё 190" in text and "и ещё 150" in text  # 40 одной строкой в свёрнутом хвосте, остальное числом
+    assert all(len(m) <= TG_LIMIT for m in short)
 
 
 def test_select_filters_and_dedup():
@@ -108,9 +110,9 @@ def test_cross_source_dedup():
 
 def test_deadline_only_goes_by_deadline():
     h = Hackathon(uid="hackathons_rus:x", source="hackathons_rus", title="РуКод", url="u",
-                  reg_deadline=NOW + timedelta(days=3))
+                  reg_deadline=NOW + timedelta(days=5))
     text = "\n".join(build_digest(select([h], Filters(), NOW), set(), NOW, ["hackathons_rus"]))
-    assert "Ближайшие 7 дней · 1" in text and "регистрация до 12 окт" in text
+    assert "Ближайшие 7 дней · 1" in text and "регистрация до 14 окт" in text
 
 
 def test_emoji_stripped_from_titles():
@@ -129,3 +131,25 @@ def test_merge_fills_gaps_from_duplicate():
     assert h.uid == "hackathons_rus:1" and h.url == "u1"  # ссылка и дедлайн первой записи
     assert h.start == rich.start and h.end == rich.end and h.prize == "1 000 000 ₽"
     assert h.description == rich.description and h.tags == ("AI / ML",)
+
+
+def test_urgent_section_first():
+    soon = make(1, days=20, reg_deadline=NOW + timedelta(days=1))
+    week = make(2, days=2)
+    text = "\n".join(build_digest(select([soon, week], WORLD, NOW), set(), NOW, ["devpost"]))
+    assert text.index("Горит") < text.index("Ближайшие 7 дней") < text.index("Hack &lt;2&gt;")
+    assert text.index("Hack &lt;1&gt;") < text.index("Ближайшие 7 дней")
+
+
+def test_merge_prefers_early_deadline_and_offline():
+    a = make(1, source="devpost", online=True, reg_deadline=NOW + timedelta(days=9))
+    b = Hackathon(**{**make(2, source="mlh", online=False, location="Houston").__dict__, "title": "Hack <1>",
+                     "reg_deadline": NOW + timedelta(days=5)})
+    [h] = select([a, b], WORLD, NOW)
+    assert h.online is False and h.location == "Houston"
+    assert h.reg_deadline == NOW + timedelta(days=5)
+
+
+def test_failed_sources_noted():
+    text = "\n".join(build_digest([make(1)], set(), NOW, ["devpost"], failed=["devpost"]))
+    assert "Не ответили: Devpost" in text

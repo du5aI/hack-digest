@@ -1,6 +1,9 @@
 """Достаём даты из свободного текста анонса: «15–17 ноября», «до 15 октября», «15.10.2026»."""
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+# Москва без перехода на летнее время; даты из текста анонсов и показ дат — по московскому времени
+MSK = timezone(timedelta(hours=3), "MSK")
 
 _MONTHS = {
     "янв": 1, "фев": 2, "мар": 3, "апр": 4, "ма": 5, "июн": 6, "июл": 7, "авг": 8,
@@ -29,7 +32,7 @@ def _month(word: str) -> int:
 
 def _make(year: int, month: int, day: int, ref: datetime) -> datetime | None:
     try:
-        d = datetime(year, month, day, tzinfo=timezone.utc)
+        d = datetime(year, month, day, tzinfo=MSK)
     except ValueError:
         return None
     # без явного года: дата «в прошлом» больше чем на 2 месяца — значит, следующий год
@@ -70,7 +73,8 @@ def extract_dates(text: str, ref: datetime) -> tuple[datetime | None, datetime |
     for pos, d_start, d_end in sorted(_candidates(text, ref), key=lambda c: c[0]):
         before = text[max(0, pos - 40):pos]
         if deadline is None and _DEADLINE_CUE.search(before):
-            deadline = d_end or d_start
+            # «регистрация до 27 октября» — включая весь день 27-го
+            deadline = (d_end or d_start).replace(hour=23, minute=59)
         elif start is None:
             start, end = d_start, d_end
     if end and start and end < start:

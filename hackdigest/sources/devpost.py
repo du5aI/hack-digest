@@ -8,7 +8,9 @@ from hackdigest.models import Hackathon
 
 API_URL = "https://devpost.com/api/hackathons"
 LIST_URL = "https://devpost.com/hackathons"
-MAX_PAGES = 5  # по 9 штук на странице
+MAX_PAGES = 15  # по 9 штук на странице
+# open — приём работ уже идёт, участвовать ещё можно; upcoming — ещё не начались
+STATUSES = ("open", "upcoming")
 
 _MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
@@ -47,9 +49,10 @@ def parse(data: dict) -> list[Hackathon]:
         if not re.search(r"[1-9]", prize):  # "$0", "₹ 0" и т.п.
             prize = ""
         location = h.get("displayed_location") or {}
-        online = location.get("icon") == "globe" or location.get("location", "").lower() == "online"
+        online = location.get("icon") == "globe" or (location.get("location") or "").lower() == "online"
         dates = h.get("submission_period_dates", "")
         start, end = parse_dates(dates)
+        is_open = h.get("open_state") == "open"
         items.append(
             Hackathon(
                 uid=f"devpost:{h['id']}",
@@ -58,24 +61,31 @@ def parse(data: dict) -> list[Hackathon]:
                 url=h["url"],
                 start=start,
                 end=end,
+                # у уже идущего хакатона присоединиться можно до конца приёма работ
+                reg_deadline=end if is_open else None,
                 online=online,
-                location="" if online else location.get("location", ""),
+                location="" if online else location.get("location") or "",
                 prize=prize,
                 tags=tuple(t["name"] for t in h.get("themes", [])),
                 dates_text="" if start else dates,
+                organizer=(h.get("organization_name") or "").strip(),
+                participants=h.get("registrations_count") or None,
             )
         )
     return items
 
 
 async def fetch(session: aiohttp.ClientSession) -> list[Hackathon]:
-    result: list[Hackathon] = []
-    for page in range(1, MAX_PAGES + 1):
-        params = [("status[]", "upcoming"), ("order_by", "deadline"), ("page", str(page))]
-        async with session.get(API_URL, params=params) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-        result.extend(parse(data))
-        if not data.get("hackathons"):
-            break
-    return result
+    result: dict[str, Hackathon] = {}
+    for status in STATUSES:
+        for page in range(1, MAX_PAGES + 1):
+            params = [("status[]", status), ("order_by", "deadline"), ("page", str(page))]
+            async with session.get(API_URL, params=params) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            for h in parse(data):
+                result.setdefault(h.uid, h)
+            meta = data.get("meta") or {}
+            if not data.get("hackathons") or page * meta.get("per_page", 9) >= meta.get("total_count", 0):
+                break
+    return list(result.values())

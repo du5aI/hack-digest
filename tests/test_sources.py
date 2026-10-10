@@ -160,3 +160,42 @@ def test_leader_id_description():
     info = json.dumps({"blocks": [{"data": {"text": "Хакатон <b>для студентов</b>&nbsp;вузов"}}, {"type": "x"}]})
     assert leader_id._description(info) == "Хакатон для студентов вузов"
     assert leader_id._description("not json") == ""
+
+
+def test_telegram_recap_vs_prize_wording():
+    ann = "Альфа-Будущее Хакатон\nРегистрация до 18 октября. Призовой фонд 3 млн ₽, фаст-трек для победителей"
+    assert telegram.is_announcement(ann)
+    assert not telegram.is_announcement("Наши студенты — победители хакатона Московского транспорта\nрегистрация")
+
+
+def test_telegram_roundup_split():
+    text = ("Дедлайны ближайших хакатонов\n\nдо 08.10 — Old Hack\nold.devpost.com\n\n"
+            "до 16.10 — О!Хакатон 2026\nhackrus.ru/1294\n\nдо 23.10 — Amazon Hackathon\namazon.devpost.com")
+    items = telegram.parse_roundup(text, "chan/5", "Канал", NOW)
+    assert [h.title for h in items] == ["О!Хакатон 2026", "Amazon Hackathon"]  # прошедший дедлайн отброшен
+    assert items[0].url == "https://hackrus.ru/1294"
+    assert items[0].reg_deadline.isoformat() == "2026-10-16T23:59:00+03:00"
+
+
+def test_telegram_title_from_lowercase_post():
+    assert telegram._title("дорогая, увольняйся с работы\nэто наш сезон Changellenge >> Hack & Change") == "Hack & Change"
+    assert telegram._title("Продолжите фразу: хакатон — это…\nХакатоны PROD") == "Хакатоны PROD"
+
+
+def test_deadline_lasts_whole_moscow_day():
+    _, _, deadline = extract_dates("Регистрация до 27 октября", NOW)
+    assert deadline.isoformat() == "2026-10-27T23:59:00+03:00"
+
+
+def test_codenrock_eastern_midnight_and_format():
+    [h] = codenrock.parse({"contests": [contest(startDate="2026-10-19T19:00:00.000Z",
+                                                description="Офлайн-хакатон в Нижнем Новгороде")]}, now=NOW)
+    assert h.start.isoformat() == "2026-10-20T00:00:00+03:00"
+    assert h.online is False
+
+
+def test_guess_online():
+    from hackdigest.text import guess_online
+    assert guess_online("Онлайн-хакатон для студентов") is True
+    assert guess_online("Отбор онлайн, очный финал в Москве") is False
+    assert guess_online("Хакатон по ML") is None

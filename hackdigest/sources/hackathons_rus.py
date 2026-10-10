@@ -1,16 +1,15 @@
 """хакатоны.рус — крупнейший российский агрегатор; лента «Ближайшие хакатоны» отдаётся через Tilda Feeds API."""
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import aiohttp
 
-from hackdigest.dates import extract_dates
+from hackdigest.dates import MSK, extract_dates
 from hackdigest.models import Hackathon
 
 API_URL = "https://feeds.tildaapi.com/api/getfeed/"
 LIST_URL = "https://www.xn--80aa3anexr8c.xn--p1acf/"  # хакатоны.рус
 FEED_UID = "617755803461"
-MSK = timezone(timedelta(hours=3))
 TAGS = {"CTF": "CTF", "DS/ML/AI": "AI / ML", "Game": "Game", "Blockchain": "Blockchain",
         "Для школьников": "для школьников"}
 _PRIZE = re.compile(r"призов\w*\s+фонд\w*[^0-9]{0,20}([\d\s.,]+\s?(?:млн\.?\s?)?(?:₽|руб\w*))", re.IGNORECASE)
