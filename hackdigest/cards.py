@@ -1,4 +1,5 @@
 """Карточка одного хакатона: подпись к талону, календарь .ics, напоминания и сообщения о переносах."""
+import math
 from datetime import datetime, timedelta
 from html import escape
 
@@ -19,9 +20,10 @@ def countdown(when: datetime, now: datetime) -> str:
     if left < timedelta(hours=1):
         return "меньше чем через час"
     if left < timedelta(days=1):
-        h = int(left.total_seconds() // 3600)
+        h = math.ceil(left.total_seconds() / 3600)
         return f"через {h} {plural(h, HOURS)}"
-    d = left.days
+    # в днях по календарю — как на талоне: дедлайн послезавтра — «через 2 дня»
+    d = (when.astimezone(MSK).date() - now.astimezone(MSK).date()).days
     return f"через {d} {plural(d, DAYS)}"
 
 
@@ -40,7 +42,7 @@ def caption(h: Hackathon, now: datetime, tracked: bool = False) -> str:
 
     facts = []
     if h.prize:
-        facts.append(f"призы: {escape(h.prize)}")
+        facts.append(escape(h.prize) if h.prize.lower().startswith("приз") else f"призы: {escape(h.prize)}")
     if h.organizer:
         facts.append(f"организатор: {escape(h.organizer)}")
     if h.participants:

@@ -11,25 +11,35 @@ from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineK
                            InlineKeyboardMarkup, LinkPreviewOptions, Message)
 
 from hackdigest import config as config_module
-from hackdigest.digest import SOURCE_NAMES, build_digest, format_interval, parse_interval, select
+from hackdigest.cards import caption, change_notice, due_reminder, ics
+from hackdigest.digest import (MONTHS_FULL, SOURCE_NAMES, board_order, build_digest, format_interval, format_line,
+                               parse_interval, plural, select)
+from hackdigest.models import Hackathon
+from hackdigest.render.board import render_board, render_board_gif
+from hackdigest.render.ticket import render_ticket
 from hackdigest.filters import FORMATS, PERIODS, REGIONS
 from hackdigest.topics import GROUPS, TOPICS
 from hackdigest.sources import SOURCES, fetch_all
 from hackdigest.sources.telegram import normalize_channel
-from hackdigest.storage import Chat, Storage
+from hackdigest.storage import Chat, Storage, event_id
 from hackdigest.timeline import render_timeline
 
 log = logging.getLogger(__name__)
 router = Router()
 CHECK_EVERY = 60  # как часто планировщик проверяет, кому пора отправлять дайджест
 MAX_CHANNELS = 40
+BOARD_ROWS = 10
+VOTE_OPTIONS = 6
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 HELP = (
     "Бот присылает дайджест ближайших хакатонов: Devpost, Codenrock и другие сайты, "
     "а также анонсы из Telegram-каналов вузов и компаний.\n\n"
     "/digest — дайджест прямо сейчас\n"
-    "/timeline — только картинка-таймлайн\n"
+    "/board — табло ближайших хакатонов; номер на кнопке открывает карточку\n"
+    "/tracked — за чем вы следите: напомню о дедлайне за 3 дня и за день, а о старте — накануне\n"
+    "/vote — голосование в группе: на какой хакатон идём\n"
+    "/timeline — картинка-таймлайн\n"
     "/filter — фильтр по формату, темам и датам\n"
     "/sources — какие сайты учитывать\n"
     "/channels — Telegram-каналы, которые читает бот\n"
@@ -50,25 +60,110 @@ async def collect(chat: Chat, db: Storage):
     new = db.unseen(chat.chat_id, uids)
     if len(new) == len(uids):  # первый дайджест: «новым» было бы всё, пометки ничего не дают
         new = set()
-    return now, items, new, failed
+    changes = db.save_events(items)
+    return now, items, new, failed, changes
 
 
-async def send_digest(bot: Bot, db: Storage, chat: Chat, limit: int, manual: bool = False,
-                      with_text: bool = True) -> None:
-    now, items, new, failed = await collect(chat, db)
+async def notify_changes(bot: Bot, db: Storage, changes: list[tuple[Hackathon, Hackathon]], now: datetime) -> None:
+    """Тем, кто следит за событием, — сообщение о переносе дат или смене формата."""
+    for old, new in changes:
+        if text := change_notice(old, new, now):
+            for chat_id in db.watchers(event_id(new)):
+                await _safe_send(bot, chat_id, text, reply_markup=card_button(new))
+
+
+async def _safe_send(bot: Bot, chat_id: int, text: str, **kw) -> None:
+    try:
+        await bot.send_message(chat_id, text, link_preview_options=NO_PREVIEW, **kw)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        log.info("Не удалось написать в чат %s", chat_id)
+
+
+def board_caption(items: list[Hackathon], new: set[str], now: datetime) -> str:
+    n = len(items)
+    text = f"<b>Табло на {now.day} {MONTHS_FULL[now.month - 1]}</b> · {n} {plural(n, ('событие', 'события', 'событий'))}"
+    if new:
+        text += f", новых: {len(new)}"
+    return text + "\nНомер на кнопке открывает посадочный талон хакатона."
+
+
+def board_keyboard(rows: list[Hackathon], group: bool) -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(text=str(i), callback_data=f"ev:{event_id(h)}") for i, h in enumerate(rows, 1)]
+    keyboard = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
+    if group:
+        keyboard.append([InlineKeyboardButton(text="Голосовать: куда идём", callback_data="vote")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def send_board(bot: Bot, db: Storage, chat_id: int, items: list[Hackathon], new: set[str], now: datetime,
+                     group: bool, animate: bool = True) -> bool:
+    rows = board_order(items, now)[:BOARD_ROWS]
+    if not rows:
+        return False
+    db.set_board(chat_id, [event_id(h) for h in rows])
+    markup = board_keyboard(rows, group)
+    text = board_caption(items, new, now)
+    gif = await asyncio.to_thread(render_board_gif, rows, new, now, BOARD_ROWS) if animate else None
+    if gif:
+        await bot.send_animation(chat_id, BufferedInputFile(gif, "board.gif"), caption=text, reply_markup=markup)
+    else:
+        png = await asyncio.to_thread(render_board, rows, new, now, BOARD_ROWS)
+        await bot.send_photo(chat_id, BufferedInputFile(png, "board.png"), caption=text, reply_markup=markup)
+    return True
+
+
+async def send_digest(bot: Bot, db: Storage, chat: Chat, limit: int, manual: bool = False) -> None:
+    now, items, new, failed, changes = await collect(chat, db)
+    await notify_changes(bot, db, changes, now)
     if not items:
         if manual:
             await bot.send_message(chat.chat_id, "Под текущий фильтр ничего не нашлось. Ослабить его можно в /filter.")
         return
-    png = await asyncio.to_thread(render_timeline, items, new, now)
-    if png:
-        await bot.send_photo(chat.chat_id, BufferedInputFile(png, "timeline.png"))
-    if with_text:
-        for text in build_digest(items, new, now, chat.sources, chat.filters, limit=limit, failed=failed):
-            await bot.send_message(chat.chat_id, text, link_preview_options=NO_PREVIEW)
-        db.mark_seen(chat.chat_id, [h.uid for h in items])
-    elif not png and manual:
-        await bot.send_message(chat.chat_id, "В ближайшие недели нет событий с точными датами.")
+    await send_board(bot, db, chat.chat_id, items, new, now, group=chat.chat_id < 0)
+    username = (await bot.me()).username
+    card_url = lambda h: f"https://t.me/{username}?start=e_{event_id(h)}"  # noqa: E731
+    for text in build_digest(items, new, now, chat.sources, chat.filters, limit=limit, failed=failed,
+                             card_url=card_url):
+        await bot.send_message(chat.chat_id, text, link_preview_options=NO_PREVIEW)
+    db.mark_seen(chat.chat_id, [h.uid for h in items])
+
+
+# ---------- карточка события ----------
+
+
+def card_button(h: Hackathon) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Открыть карточку", callback_data=f"ev:{event_id(h)}")]])
+
+
+def card_keyboard(h: Hackathon, tracked: bool) -> InlineKeyboardMarkup:
+    eid = event_id(h)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Регистрация и детали ↗", url=h.url)],
+        [InlineKeyboardButton(text="Не следить" if tracked else "Следить и напоминать", callback_data=f"trk:{eid}"),
+         InlineKeyboardButton(text="В календарь", callback_data=f"ics:{eid}")],
+    ])
+
+
+async def send_card(bot: Bot, db: Storage, chat_id: int, eid: str) -> None:
+    h = db.event(eid)
+    if h is None:
+        await bot.send_message(chat_id, "Это событие уже не найти — возможно, оно прошло. Свежий список: /digest")
+        return
+    now = datetime.now(timezone.utc)
+    tracked = db.is_tracked(chat_id, eid)
+    png = await asyncio.to_thread(render_ticket, h, now)
+    await bot.send_photo(chat_id, BufferedInputFile(png, "ticket.png"), caption=caption(h, now, tracked),
+                         reply_markup=card_keyboard(h, tracked))
+
+
+async def send_reminders(bot: Bot, db: Storage) -> None:
+    now = datetime.now(timezone.utc)
+    for chat_id, h, sent in db.tracked():
+        if due := due_reminder(h, sent, now):
+            keys, text = due
+            db.mark_reminded(chat_id, event_id(h), keys)  # сначала отмечаем — без повторов при ошибке отправки
+            await _safe_send(bot, chat_id, text, reply_markup=card_button(h))
 
 
 def settings_text(chat: Chat) -> str:
@@ -142,6 +237,12 @@ TOPICS_TEXT = {
 # ---------- команды ----------
 
 
+@router.message(CommandStart(deep_link=True, magic=F.args.startswith("e_")))
+async def cmd_start_card(message: Message, command: CommandObject, bot: Bot, db: Storage) -> None:
+    """Ссылка «карточка» из текста дайджеста: t.me/<бот>?start=e_<id>."""
+    await send_card(bot, db, message.chat.id, command.args.removeprefix("e_"))
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Storage, cfg: config_module.Config) -> None:
     chat = db.subscribe(message.chat.id, cfg.default_interval, cfg.default_sources, cfg.default_channels)
@@ -180,10 +281,56 @@ async def cmd_digest(message: Message, bot: Bot, db: Storage, cfg: config_module
 
 
 @router.message(Command("timeline"))
-async def cmd_timeline(message: Message, bot: Bot, db: Storage, cfg: config_module.Config) -> None:
+async def cmd_timeline(message: Message, bot: Bot, db: Storage) -> None:
     if chat := await _require_chat(message, db):
         await bot.send_chat_action(chat.chat_id, "upload_photo")
-        await send_digest(bot, db, chat, cfg.limit, manual=True, with_text=False)
+        now, items, new, _, _ = await collect(chat, db)
+        png = await asyncio.to_thread(render_timeline, items, new, now)
+        if png:
+            await bot.send_photo(chat.chat_id, BufferedInputFile(png, "timeline.png"))
+        else:
+            await message.answer("В ближайшие недели нет событий с точными датами.")
+
+
+@router.message(Command("board"))
+async def cmd_board(message: Message, bot: Bot, db: Storage) -> None:
+    if chat := await _require_chat(message, db):
+        await bot.send_chat_action(chat.chat_id, "upload_video")
+        now, items, new, _, _ = await collect(chat, db)
+        if not await send_board(bot, db, chat.chat_id, items, new, now, group=chat.chat_id < 0):
+            await message.answer("Под текущий фильтр ничего не нашлось. Ослабить его можно в /filter.")
+
+
+@router.message(Command("tracked"))
+async def cmd_tracked(message: Message, db: Storage) -> None:
+    now = datetime.now(timezone.utc)
+    items = sorted((h for _, h, _ in db.tracked(message.chat.id)),
+                   key=lambda h: min((d for d in (h.reg_deadline, h.start) if d), default=now))
+    if not items:
+        await message.answer("Вы пока ни за чем не следите. Откройте карточку хакатона — кнопкой с номером под "
+                             "табло или ссылкой «карточка» в дайджесте — и нажмите «Следить».")
+        return
+    lines = ["<b>Вы следите</b>", *(f"{i}. {format_line(h, now)}" for i, h in enumerate(items, 1))]
+    buttons = [InlineKeyboardButton(text=str(i), callback_data=f"ev:{event_id(h)}") for i, h in enumerate(items, 1)]
+    keyboard = [buttons[i:i + 5] for i in range(0, len(buttons), 5)]
+    keyboard.append([InlineKeyboardButton(text="Всё в календарь", callback_data="ics:all")])
+    await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+                         link_preview_options=NO_PREVIEW)
+
+
+@router.message(Command("vote"))
+async def cmd_vote(message: Message, bot: Bot, db: Storage) -> None:
+    await start_vote(bot, db, message.chat.id)
+
+
+async def start_vote(bot: Bot, db: Storage, chat_id: int) -> None:
+    events = [h for h in (db.event(e) for e in db.board(chat_id)[:VOTE_OPTIONS]) if h]
+    if len(events) < 2:
+        await bot.send_message(chat_id, "Сначала нужно табло: /board")
+        return
+    options = [h.title if len(h.title) <= 100 else h.title[:99] + "…" for h in events]
+    await bot.send_poll(chat_id, "На какой хакатон идём?", options, is_anonymous=False,
+                        allows_multiple_answers=True)
 
 
 @router.message(Command("interval"))
@@ -321,6 +468,49 @@ async def filter_action(query: CallbackQuery, bot: Bot, db: Storage, cfg: config
     await query.answer(f"Фильтр: {f.describe()}")
 
 
+@router.callback_query(F.data.startswith("ev:"))
+async def open_card(query: CallbackQuery, bot: Bot, db: Storage) -> None:
+    await query.answer()
+    await send_card(bot, db, query.message.chat.id, query.data.removeprefix("ev:"))
+
+
+@router.callback_query(F.data.startswith("trk:"))
+async def toggle_track(query: CallbackQuery, db: Storage) -> None:
+    eid = query.data.removeprefix("trk:")
+    h = db.event(eid)
+    if h is None:
+        await query.answer("Событие не найдено", show_alert=True)
+        return
+    chat_id = query.message.chat.id
+    on = not db.is_tracked(chat_id, eid)
+    db.track(chat_id, eid, on)
+    now = datetime.now(timezone.utc)
+    try:
+        await query.message.edit_caption(caption=caption(h, now, on), reply_markup=card_keyboard(h, on))
+    except TelegramBadRequest:
+        pass
+    await query.answer("Напомню о дедлайне и старте" if on else "Больше не слежу")
+
+
+@router.callback_query(F.data.startswith("ics:"))
+async def send_ics(query: CallbackQuery, bot: Bot, db: Storage) -> None:
+    eid = query.data.removeprefix("ics:")
+    chat_id = query.message.chat.id
+    items = [h for _, h, _ in db.tracked(chat_id)] if eid == "all" else [h for h in [db.event(eid)] if h]
+    await query.answer()
+    if not items:
+        return
+    name = "hackathons.ics" if eid == "all" else f"hackathon-{eid}.ics"
+    await bot.send_document(chat_id, BufferedInputFile(ics(items, datetime.now(timezone.utc)), name),
+                            caption="Откройте файл — события добавятся в календарь вместе с напоминанием о регистрации.")
+
+
+@router.callback_query(F.data == "vote")
+async def vote_button(query: CallbackQuery, bot: Bot, db: Storage) -> None:
+    await query.answer()
+    await start_vote(bot, db, query.message.chat.id)
+
+
 # ---------- планировщик ----------
 
 
@@ -341,6 +531,10 @@ async def scheduler(bot: Bot, db: Storage, cfg: config_module.Config) -> None:
                 db.unsubscribe(chat.chat_id)
             except Exception:
                 log.exception("Не удалось отправить дайджест в чат %s", chat.chat_id)
+        try:
+            await send_reminders(bot, db)
+        except Exception:
+            log.exception("Планировщик: не удалось разослать напоминания")
         await asyncio.sleep(CHECK_EVERY)
 
 
@@ -355,6 +549,9 @@ async def main() -> None:
     dp["cfg"] = cfg
     await bot.set_my_commands([
         BotCommand(command="digest", description="Дайджест сейчас"),
+        BotCommand(command="board", description="Табло с карточками хакатонов"),
+        BotCommand(command="tracked", description="За чем я слежу"),
+        BotCommand(command="vote", description="Голосование: куда идём"),
         BotCommand(command="timeline", description="Картинка-таймлайн"),
         BotCommand(command="filter", description="Фильтр: формат, темы, даты"),
         BotCommand(command="sources", description="Сайты-источники"),
