@@ -18,6 +18,8 @@ AGGREGATORS = [
     "codenrock",
     "markhack_ural",  # ИНАЧЕ | Хакатоны (Урал)
     "leaders_hack",  # Лидеры цифровой трансформации
+    "ctfnews",  # CTF News: анонсы российских CTF
+    "hackrnd",  # Хакатон Осень (Ростов-на-Дону)
 ]
 # Вузы и компании пишут о хакатонах редко — у них ищем посты по слову «хакатон».
 UNIVERSITIES = [
@@ -39,8 +41,14 @@ COMPANIES = [
     "truetechcommunity",  # МТС True Tech
     "alfastudents",  # Альфа-Будущее
 ]
-DEFAULT_CHANNELS = [*AGGREGATORS, *UNIVERSITIES, *COMPANIES]
+# Команды и клубы CTF: про хакатоны не пишут, ищем по слову CTF.
+CTF_TEAMS = [
+    "kubctf",  # KubSTU CTF (Кубанский ГТУ)
+]
+DEFAULT_CHANNELS = [*AGGREGATORS, *UNIVERSITIES, *COMPANIES, *CTF_TEAMS]
 _FEED_CHANNELS = set(AGGREGATORS)
+DEFAULT_QUERY = "хакатон"
+QUERIES = {c: "CTF" for c in CTF_TEAMS}  # своё слово для поиска там, где «хакатон» не встречается
 
 STRONG = re.compile(r"хакатон|hackathon|геймджем|game ?jam|datathon|дататон|датасон|(?<![a-zа-я])ctf(?![a-zа-я])"
                     r"|кейс-чемпионат|чемпионат по программированию", re.IGNORECASE)
@@ -193,7 +201,7 @@ async def _get(session: aiohttp.ClientSession, url: str, params: dict) -> str:
 
 
 async def fetch_channel(session: aiohttp.ClientSession, channel: str) -> list[Hackathon]:
-    params = {} if channel in _FEED_CHANNELS else {"q": "хакатон"}
+    params = {} if channel in _FEED_CHANNELS else {"q": QUERIES.get(channel, DEFAULT_QUERY)}
     try:
         html = await _get(session, f"https://t.me/s/{channel}", params)
     except ChannelNotFound:

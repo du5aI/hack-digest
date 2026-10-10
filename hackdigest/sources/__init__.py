@@ -5,7 +5,8 @@ import time
 import aiohttp
 
 from hackdigest.models import Hackathon
-from hackdigest.sources import codenrock, devfolio, devpost, hackathons_rus, leader_id, mlh, telegram
+from hackdigest.sources import (changellenge, codenrock, ctftime, devfolio, devpost, dorahacks, hackathons_rus, lablab,
+                                leader_id, mlh, taikai, telegram)
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +18,11 @@ SOURCES = {
     "devpost": devpost.fetch,
     "mlh": mlh.fetch,
     "devfolio": devfolio.fetch,
+    "changellenge": changellenge.fetch,
+    "dorahacks": dorahacks.fetch,
+    "taikai": taikai.fetch,
+    "lablab": lablab.fetch,
+    "ctftime": ctftime.fetch,
 }
 
 CACHE_TTL = 30 * 60

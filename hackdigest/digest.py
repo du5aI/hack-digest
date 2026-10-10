@@ -19,6 +19,11 @@ SOURCE_NAMES = {
     "codenrock": "Codenrock",
     "mlh": "MLH",
     "devfolio": "Devfolio",
+    "changellenge": "Changellenge",
+    "dorahacks": "DoraHacks",
+    "taikai": "TAIKAI",
+    "lablab": "lablab.ai",
+    "ctftime": "CTFtime",
     "telegram": "Telegram-каналы",
 }
 SOURCE_LINKS = {
@@ -28,6 +33,11 @@ SOURCE_LINKS = {
     "codenrock": "https://codenrock.com/contests",
     "mlh": "https://www.mlh.com/seasons",
     "devfolio": "https://devfolio.co/hackathons",
+    "changellenge": "https://changellenge.com/championships/",
+    "dorahacks": "https://dorahacks.io/hackathon",
+    "taikai": "https://taikai.network/hackathons",
+    "lablab": "https://lablab.ai/ai-hackathons",
+    "ctftime": "https://ctftime.org/event/list/upcoming",
 }
 
 # ---------- интервалы ----------
