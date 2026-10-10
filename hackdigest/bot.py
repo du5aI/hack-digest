@@ -8,12 +8,12 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, InlineKeyboardButton,
-                           InlineKeyboardMarkup, LinkPreviewOptions, Message)
+                           InlineKeyboardMarkup, LinkPreviewOptions, MenuButtonWebApp, Message, WebAppInfo)
 
 from hackdigest import config as config_module
 from hackdigest.cards import caption, change_notice, due_reminder, ics
 from hackdigest.digest import (MONTHS_FULL, SOURCE_NAMES, board_order, build_digest, format_interval, format_line,
-                               parse_interval, plural, select)
+                               URGENT, parse_interval, plural, select)
 from hackdigest.models import Hackathon
 from hackdigest.render.board import render_board, render_board_gif
 from hackdigest.render.ticket import render_ticket
@@ -95,14 +95,32 @@ def board_keyboard(rows: list[Hackathon], group: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def app_caption(items: list[Hackathon], now: datetime) -> str:
+    """Одна строка под табло в режиме Mini App: всё остальное — в приложении."""
+    items = [h for h in items if h.source != "telegram"]  # в приложении посты каналов не показываются
+    n = len(items)
+    hot = sum(1 for h in items if h.reg_deadline and now < h.reg_deadline <= now + URGENT)
+    text = f"<b>Табло на {now.day} {MONTHS_FULL[now.month - 1]}</b> · {n} {plural(n, ('рейс', 'рейса', 'рейсов'))}"
+    return text + (f", горят {hot}" if hot else "")
+
+
+def app_keyboard(url: str, group: bool) -> InlineKeyboardMarkup:
+    # в группах Telegram не открывает Mini App из inline-кнопки — там обычная ссылка
+    button = (InlineKeyboardButton(text="Открыть табло", url=url) if group
+              else InlineKeyboardButton(text="Открыть табло", web_app=WebAppInfo(url=url)))
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
+
+
 async def send_board(bot: Bot, db: Storage, chat_id: int, items: list[Hackathon], new: set[str], now: datetime,
-                     group: bool, animate: bool = True) -> bool:
+                     group: bool, animate: bool = True, webapp_url: str = "") -> bool:
     rows = board_order(items, now)[:BOARD_ROWS]
     if not rows:
         return False
     db.set_board(chat_id, [event_id(h) for h in rows])
-    markup = board_keyboard(rows, group)
-    text = board_caption(items, new, now)
+    if webapp_url:
+        markup, text = app_keyboard(webapp_url, group), app_caption(items, now)
+    else:
+        markup, text = board_keyboard(rows, group), board_caption(items, new, now)
     gif = await asyncio.to_thread(render_board_gif, rows, new, now, BOARD_ROWS) if animate else None
     if gif:
         await bot.send_animation(chat_id, BufferedInputFile(gif, "board.gif"), caption=text, reply_markup=markup)
@@ -112,14 +130,17 @@ async def send_board(bot: Bot, db: Storage, chat_id: int, items: list[Hackathon]
     return True
 
 
-async def send_digest(bot: Bot, db: Storage, chat: Chat, limit: int, manual: bool = False) -> None:
+async def send_digest(bot: Bot, db: Storage, chat: Chat, limit: int, manual: bool = False, webapp_url: str = "") -> None:
     now, items, new, failed, changes = await collect(chat, db)
     await notify_changes(bot, db, changes, now)
     if not items:
         if manual:
             await bot.send_message(chat.chat_id, "Под текущий фильтр ничего не нашлось. Ослабить его можно в /filter.")
         return
-    await send_board(bot, db, chat.chat_id, items, new, now, group=chat.chat_id < 0)
+    await send_board(bot, db, chat.chat_id, items, new, now, group=chat.chat_id < 0, webapp_url=webapp_url)
+    if webapp_url:  # режим Mini App: одно сообщение-табло, без текстовых простыней
+        db.mark_seen(chat.chat_id, [h.uid for h in items])
+        return
     username = (await bot.me()).username
     card_url = lambda h: f"https://t.me/{username}?start=e_{event_id(h)}"  # noqa: E731
     for text in build_digest(items, new, now, chat.sources, chat.filters, limit=limit, failed=failed,
@@ -246,6 +267,12 @@ async def cmd_start_card(message: Message, command: CommandObject, bot: Bot, db:
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Storage, cfg: config_module.Config) -> None:
     chat = db.subscribe(message.chat.id, cfg.default_interval, cfg.default_sources, cfg.default_channels)
+    if cfg.webapp_url:
+        await message.answer(
+            f"Раз в {format_interval(chat.interval_sec)} пришлю табло ближайших хакатонов. "
+            "Всё остальное — в приложении: кнопка «Табло» рядом с полем ввода.",
+            reply_markup=app_keyboard(cfg.webapp_url, message.chat.id < 0))
+        return
     await message.answer(f"Подписка оформлена, дайджест будет приходить раз в {format_interval(chat.interval_sec)}.\n\n{HELP}")
 
 
@@ -277,7 +304,7 @@ async def cmd_settings(message: Message, db: Storage) -> None:
 async def cmd_digest(message: Message, bot: Bot, db: Storage, cfg: config_module.Config) -> None:
     if chat := await _require_chat(message, db):
         await bot.send_chat_action(chat.chat_id, "upload_photo")
-        await send_digest(bot, db, chat, cfg.limit, manual=True)
+        await send_digest(bot, db, chat, cfg.limit, manual=True, webapp_url=cfg.webapp_url)
 
 
 @router.message(Command("timeline"))
@@ -433,7 +460,7 @@ async def filter_action(query: CallbackQuery, bot: Bot, db: Storage, cfg: config
     action, value = parts[1], parts[2] if len(parts) > 2 else ""
     if action == "show":
         await query.answer()
-        await send_digest(bot, db, chat, cfg.limit, manual=True)
+        await send_digest(bot, db, chat, cfg.limit, manual=True, webapp_url=cfg.webapp_url)
         return
     if action == "menu":
         # переключаем экран: главное меню фильтра или список тем одной группы
@@ -525,7 +552,7 @@ async def scheduler(bot: Bot, db: Storage, cfg: config_module.Config) -> None:
             # переносим следующий запуск заранее, чтобы ошибка отправки не приводила к спаму каждую минуту
             db.schedule_next(chat)
             try:
-                await send_digest(bot, db, chat, cfg.limit)
+                await send_digest(bot, db, chat, cfg.limit, webapp_url=cfg.webapp_url)
             except TelegramForbiddenError:
                 log.info("Чат %s заблокировал бота, отписываю", chat.chat_id)
                 db.unsubscribe(chat.chat_id)
@@ -547,6 +574,24 @@ async def main() -> None:
     dp.include_router(router)
     dp["db"] = db
     dp["cfg"] = cfg
+    if cfg.webapp_url:
+        # минимум команд: всё остальное делается в приложении
+        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Табло", web_app=WebAppInfo(url=cfg.webapp_url)))
+        await bot.set_my_commands([
+            BotCommand(command="digest", description="Табло сейчас"),
+            BotCommand(command="interval", description="Как часто присылать"),
+            BotCommand(command="stop", description="Отписаться"),
+        ])
+    else:
+        await set_full_commands(bot)
+    task = asyncio.create_task(scheduler(bot, db, cfg))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        task.cancel()
+
+
+async def set_full_commands(bot: Bot) -> None:
     await bot.set_my_commands([
         BotCommand(command="digest", description="Дайджест сейчас"),
         BotCommand(command="board", description="Табло с карточками хакатонов"),
@@ -560,11 +605,6 @@ async def main() -> None:
         BotCommand(command="settings", description="Текущие настройки"),
         BotCommand(command="stop", description="Отписаться"),
     ])
-    task = asyncio.create_task(scheduler(bot, db, cfg))
-    try:
-        await dp.start_polling(bot)
-    finally:
-        task.cancel()
 
 
 if __name__ == "__main__":

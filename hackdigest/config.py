@@ -16,6 +16,7 @@ class Config:
     default_sources: list[str]
     default_channels: list[str]
     limit: int
+    webapp_url: str = ""  # адрес Mini App; если задан, дайджест — это табло и кнопка вместо текста
 
 
 def _list(name: str, default: list[str]) -> list[str]:
@@ -44,4 +45,12 @@ def load() -> Config:
         default_sources=sources,
         default_channels=channels,
         limit=int(os.environ.get("SECTION_LIMIT", "6")),
+        webapp_url=_webapp_url(),
     )
+
+
+def _webapp_url() -> str:
+    url = os.environ.get("WEBAPP_URL", "").strip()
+    if url and not url.startswith("https://"):
+        raise SystemExit("WEBAPP_URL должен начинаться с https:// — Telegram открывает Mini App только по HTTPS")
+    return url
