@@ -119,7 +119,7 @@ def app_keyboard(url: str, group: bool) -> InlineKeyboardMarkup:
 
 
 async def send_board(bot: Bot, db: Storage, chat_id: int, items: list[Hackathon], new: set[str], now: datetime,
-                     group: bool, animate: bool = True, webapp_url: str = "") -> bool:
+                     group: bool, animate: bool = False, webapp_url: str = "") -> bool:
     rows = board_order(items, now)[:BOARD_ROWS]
     if not rows:
         return False

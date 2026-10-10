@@ -56,13 +56,12 @@ def test_digest_in_webapp_mode_is_one_message(monkeypatch):
         return NOW, items, set(), [], []
 
     monkeypatch.setattr(hb, "collect", fake_collect)
-    monkeypatch.setattr(hb, "render_board_gif", lambda *a, **k: b"GIF")
     db = Storage(":memory:")
     chat = db.subscribe(1, 3600, ["codenrock"], [])
     bot = FakeBot()
     asyncio.run(hb.send_digest(bot, db, chat, 6, webapp_url=URL))
     kinds = [type(m).__name__ for m in bot.out]
-    assert kinds == ["SendAnimation"]  # табло — и никаких текстовых сообщений
+    assert kinds == ["SendPhoto"]  # чёткое табло-картинка — и никаких текстовых сообщений
     assert bot.out[0].reply_markup.inline_keyboard[0][0].web_app.url == URL + "?bot=b"  # имя бота — для «Напомнить»
     assert db.unseen(1, [h.uid for h in items]) == set()  # показанные отмечены
 

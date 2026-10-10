@@ -21,12 +21,16 @@ DIM = "#6B6A63"
 RED = "#FF5A3C"
 GREEN = "#5BD38A"
 
-W, PAD = 1280, 36
-CW, CH, GAP = 28, 46, 3  # плитка и зазор между плитками
-COL_GAP, ROW_GAP = 16, 10
-TOP = 134  # первая строка табло
-COLS = (("№", 2), ("ДАТА", 5), ("ХАКАТОН", 19), ("ГОРОД", 3), ("СТАТУС", 8))
-TITLE_TILES = 19
+# Рисуем с двойным разрешением и без колонки города (она есть в приложении): на телефоне табло
+# показывается в ширину экрана, и только крупный исходник остаётся чётким после сжатия Telegram.
+S = 2
+PAD = 36 * S
+CW, CH, GAP = 28 * S, 46 * S, 3 * S  # плитка и зазор между плитками
+COL_GAP, ROW_GAP = 16 * S, 10 * S
+TOP = 134 * S  # первая строка табло
+TITLE_TILES = 17
+COLS = (("№", 2), ("ДАТА", 5), ("ХАКАТОН", TITLE_TILES), ("СТАТУС", 8))
+W = 2 * PAD + sum(n * (CW + GAP) - GAP for _, n in COLS) + COL_GAP * (len(COLS) - 1)
 
 # ---------- текст для плиток ----------
 
@@ -102,7 +106,7 @@ def _rows(items: list[Hackathon], rows: int) -> tuple[list[Hackathon], int]:
 
 @lru_cache(maxsize=1)
 def _glyph_font():
-    f = font("JetBrainsMono-ExtraBold", 30)
+    f = font("JetBrainsMono-ExtraBold", 30 * S)
     cap = -f.getbbox("H", anchor="ls")[1]
     return f, (CH + cap) / 2  # базовая линия, при которой заглавные стоят ровно по центру
 
@@ -111,13 +115,13 @@ def _glyph_font():
 def _tile(ch: str, color: str) -> Image.Image:
     im = Image.new("RGB", (CW, CH), BG)
     d = ImageDraw.Draw(im)
-    d.rounded_rectangle((0, 0, CW - 1, CH - 1), radius=4, fill=TILE)
+    d.rounded_rectangle((0, 0, CW - 1, CH - 1), radius=4 * S, fill=TILE)
     # нижний флап темнее; скругление у шва даёт зазор на петле, как у настоящих флапов
-    d.rounded_rectangle((0, CH // 2, CW - 1, CH - 1), radius=3, fill=TILE_LO)
+    d.rounded_rectangle((0, CH // 2, CW - 1, CH - 1), radius=3 * S, fill=TILE_LO)
     if ch != " ":
         f, base = _glyph_font()
         d.text((CW / 2, base), ch, font=f, fill=color, anchor="ms")
-    d.line((0, CH // 2 - 1, CW, CH // 2 - 1), fill=SEAM, width=2)
+    d.line((0, CH // 2 - 1, CW, CH // 2 - 1), fill=SEAM, width=2 * S)
     return im
 
 
@@ -138,7 +142,7 @@ def _flip(old: tuple[str, str], new: tuple[str, str], phase: int) -> Image.Image
         flap = b.crop((0, h, CW, CH)).resize((CW, fh), Image.Resampling.BILINEAR)
         flap = ImageEnhance.Brightness(flap).enhance(0.8)
         im.paste(flap, (0, h))
-        ImageDraw.Draw(im).line((1, h + fh, CW - 2, h + fh), fill=SEAM, width=2)  # тень под кромкой
+        ImageDraw.Draw(im).line((1, h + fh, CW - 2, h + fh), fill=SEAM, width=2 * S)  # тень под кромкой
     return im
 
 
@@ -150,25 +154,25 @@ def _layout(items: list[Hackathon], new_uids: set[str], now: datetime, rows: int
     shown, more = _rows(items, rows)
     if not shown:
         return None
-    height = TOP + len(shown) * (CH + ROW_GAP) + 64
+    height = TOP + len(shown) * (CH + ROW_GAP) + 64 * S
     im = Image.new("RGB", (W, height), BG)
     d = ImageDraw.Draw(im)
-    d.text((PAD, 66), "ХАКАТОНЫ", font=font("JetBrainsMono-ExtraBold", 44), fill=WHITE, anchor="ls")
-    d.text((W - PAD, 66), f"ТАБЛО НА {msk(now):%d.%m.%Y · %H:%M} МСК", font=font("JetBrainsMono-Medium", 22),
+    d.text((PAD, 66 * S), "ХАКАТОНЫ", font=font("JetBrainsMono-ExtraBold", 44 * S), fill=WHITE, anchor="ls")
+    d.text((W - PAD, 66 * S), f"{msk(now):%d.%m · %H:%M} МСК", font=font("JetBrainsMono-Medium", 22 * S),
            fill=DIM, anchor="rs")
 
     xs, x = [], PAD
     for name, n in COLS:
         xs.append(x)
-        d.text((x, TOP - 14), name, font=font("JetBrainsMono-Medium", 19), fill=DIM, anchor="ls")
+        d.text((x, TOP - 14 * S), name, font=font("JetBrainsMono-Medium", 19 * S), fill=DIM, anchor="ls")
         x += n * (CW + GAP) - GAP + COL_GAP
 
     cells = []
     for r, h in enumerate(shown):
         y = TOP + r * (CH + ROW_GAP)
         status, color = _status(h, now)
-        texts = (f"{r + 1:>2}", f"{msk(h.key_date):%d.%m}", short_title(h.title), city_code(h).center(3), status)
-        colors = (WHITE, WHITE, AMBER, WHITE, color)
+        texts = (f"{r + 1:>2}", f"{msk(h.key_date):%d.%m}", short_title(h.title), status)
+        colors = (WHITE, WHITE, AMBER, color)
         for cx, (_, n), text, c in zip(xs, COLS, texts, colors):
             for i, ch in enumerate(text[:n].ljust(n)):
                 tx = cx + i * (CW + GAP)
@@ -176,14 +180,14 @@ def _layout(items: list[Hackathon], new_uids: set[str], now: datetime, rows: int
                 if ch != " ":
                     cells.append((tx, y, ch, c))
         if h.uid in new_uids:
-            d.rectangle((PAD - 22, y + 8, PAD - 15, y + CH - 8), fill=AMBER)
+            d.rectangle((PAD - 22 * S, y + 8 * S, PAD - 15 * S, y + CH - 8 * S), fill=AMBER)
 
     # легенда
-    y = height - 26
-    legend = font("JetBrainsMono-Medium", 19)
-    d.rectangle((PAD, y - 15, PAD + 7, y + 1), fill=AMBER)
-    x = PAD + 16
-    for text, c in (("НОВОЕ", DIM), ("   КРАСНЫМ", RED), (" — ГОРИТ, РЕГИСТРАЦИЯ ≤ 3 ДНЕЙ", DIM),
+    y = height - 26 * S
+    legend = font("JetBrainsMono-Medium", 19 * S)
+    d.rectangle((PAD, y - 15 * S, PAD + 7 * S, y + S), fill=AMBER)
+    x = PAD + 16 * S
+    for text, c in (("НОВОЕ", DIM), ("   КРАСНЫМ", RED), (" — ГОРИТ ≤ 3 ДНЕЙ", DIM),
                     ("   ЗЕЛЁНЫМ", GREEN), (" — УЖЕ ИДЁТ", DIM)):
         d.text((x, y), text, font=legend, fill=c, anchor="ls")
         x += legend.getlength(text)

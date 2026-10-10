@@ -5,7 +5,7 @@ from PIL import Image
 
 from hackdigest.models import Hackathon
 from hackdigest.render import render_board, render_board_gif, render_ticket
-from hackdigest.render.board import city_code, short_title
+from hackdigest.render.board import W, city_code, short_title
 from hackdigest.render.ticket import _countdown, ticket_code
 
 NOW = datetime(2026, 10, 10, 9, tzinfo=timezone.utc)
@@ -49,11 +49,11 @@ def test_board_png_and_gif():
     items = [make(i, days=i) for i in range(1, 15)]
     data = render_board(items, {"codenrock:1"}, NOW)
     im = _open(data, "PNG")
-    assert im.width == 1280 and 500 < im.height < 900
+    assert im.width == W and 1000 < im.height < 1800
 
     gif = render_board_gif(items, {"codenrock:1"}, NOW)
     im = _open(gif, "GIF")
-    assert im.size == (1280, _open(data, "PNG").height)
+    assert im.size == (W, _open(data, "PNG").height) and W >= 2000  # крупный исходник — чёткий в Telegram
     assert len(gif) < 3_000_000
     durations = []
     for i in range(im.n_frames):
