@@ -5,7 +5,7 @@ from aiogram import Bot
 from aiogram.types import User
 
 from hackdigest import bot as hb
-from hackdigest.export import event_json, snapshot
+from hackdigest.export import event_json, plausible, snapshot
 from hackdigest.models import Hackathon
 from hackdigest.storage import Storage
 
@@ -63,5 +63,40 @@ def test_digest_in_webapp_mode_is_one_message(monkeypatch):
     asyncio.run(hb.send_digest(bot, db, chat, 6, webapp_url=URL))
     kinds = [type(m).__name__ for m in bot.out]
     assert kinds == ["SendAnimation"]  # табло — и никаких текстовых сообщений
-    assert bot.out[0].reply_markup.inline_keyboard[0][0].web_app.url == URL
+    assert bot.out[0].reply_markup.inline_keyboard[0][0].web_app.url == URL + "?bot=b"  # имя бота — для «Напомнить»
     assert db.unseen(1, [h.uid for h in items]) == set()  # показанные отмечены
+
+
+def test_plausible_drops_far_future_typos():
+    assert plausible(make(1), NOW)
+    assert not plausible(make(1, start=datetime(2028, 3, 12, tzinfo=timezone.utc)), NOW)
+
+
+def test_app_url_carries_bot_name():
+    assert hb.app_url(URL, "hack_bot") == URL + "?bot=hack_bot"
+    assert hb.app_url(URL + "?x=1", "hack_bot") == URL + "?x=1&bot=hack_bot"
+    assert hb.app_url(URL, None) == URL
+
+
+def test_track_deep_link_from_app(monkeypatch):
+    import datetime as dt
+    from aiogram import Dispatcher
+    from aiogram.types import Chat, Message, Update
+
+    from hackdigest.config import Config
+    from hackdigest.storage import event_id
+
+    db = Storage(":memory:")
+    h = make(3)
+    db.save_events([h])
+    bot = FakeBot()
+    dp = Dispatcher(); dp.include_router(hb.router)
+    dp["db"] = db
+    dp["cfg"] = Config("x", ":memory:", 3600, ["codenrock"], [], 6, URL)
+    text = f"/start t_{event_id(h)}"
+    msg = Message(message_id=1, date=dt.datetime.now(), chat=Chat(id=7, type="private"),
+                  from_user=User(id=7, is_bot=False, first_name="u"), text=text,
+                  entities=[{"type": "bot_command", "offset": 0, "length": 6}])
+    asyncio.run(dp.feed_update(bot, Update(update_id=1, message=msg)))
+    assert db.is_tracked(7, event_id(h))
+    assert "Напомню про <b>Хакатон 3</b>" in bot.out[-1].text

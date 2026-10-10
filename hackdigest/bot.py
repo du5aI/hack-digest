@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from html import escape
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -17,7 +18,8 @@ from hackdigest.digest import (MONTHS_FULL, SOURCE_NAMES, board_order, build_dig
 from hackdigest.models import Hackathon
 from hackdigest.render.board import render_board, render_board_gif
 from hackdigest.render.ticket import render_ticket
-from hackdigest.filters import FORMATS, PERIODS, REGIONS
+from hackdigest.filters import FORMATS, PERIODS, REGIONS, Filters
+from hackdigest.text import strip_emoji
 from hackdigest.topics import GROUPS, TOPICS
 from hackdigest.sources import SOURCES, fetch_all
 from hackdigest.sources.telegram import normalize_channel
@@ -104,6 +106,11 @@ def app_caption(items: list[Hackathon], now: datetime) -> str:
     return text + (f", горят {hot}" if hot else "")
 
 
+def app_url(url: str, bot_username: str | None) -> str:
+    """Адрес Mini App с именем бота: по нему кнопка «Напомнить» в приложении открывает чат с ботом."""
+    return f"{url}{'&' if '?' in url else '?'}bot={bot_username}" if bot_username else url
+
+
 def app_keyboard(url: str, group: bool) -> InlineKeyboardMarkup:
     # в группах Telegram не открывает Mini App из inline-кнопки — там обычная ссылка
     button = (InlineKeyboardButton(text="Открыть табло", url=url) if group
@@ -118,7 +125,7 @@ async def send_board(bot: Bot, db: Storage, chat_id: int, items: list[Hackathon]
         return False
     db.set_board(chat_id, [event_id(h) for h in rows])
     if webapp_url:
-        markup, text = app_keyboard(webapp_url, group), app_caption(items, now)
+        markup, text = app_keyboard(app_url(webapp_url, (await bot.me()).username), group), app_caption(items, now)
     else:
         markup, text = board_keyboard(rows, group), board_caption(items, new, now)
     gif = await asyncio.to_thread(render_board_gif, rows, new, now, BOARD_ROWS) if animate else None
@@ -264,6 +271,24 @@ async def cmd_start_card(message: Message, command: CommandObject, bot: Bot, db:
     await send_card(bot, db, message.chat.id, command.args.removeprefix("e_"))
 
 
+@router.message(CommandStart(deep_link=True, magic=F.args.startswith("t_")))
+async def cmd_start_track(message: Message, command: CommandObject, db: Storage, cfg: config_module.Config) -> None:
+    """Кнопка «Напомнить в Telegram» в Mini App: t.me/<бот>?start=t_<id>."""
+    eid = command.args.removeprefix("t_")
+    db.subscribe(message.chat.id, cfg.default_interval, cfg.default_sources, cfg.default_channels)
+    if db.event(eid) is None:
+        # событие могло ещё не попасть в базу бота (приложение видит весь мир, а дайджест — фильтр чата)
+        raw, _ = await fetch_all(list(SOURCES), [])
+        db.save_events(select(raw, Filters(region="world"), datetime.now(timezone.utc)))
+    h = db.event(eid)
+    if h is None:
+        await message.answer("Не нашёл это событие. Добавьте его в календарь прямо из талона в приложении.")
+        return
+    db.track(message.chat.id, eid, True)
+    await message.answer(f"Напомню про <b>{escape(strip_emoji(h.title))}</b>: за 3 дня и за день до конца регистрации "
+                         "и перед стартом.", reply_markup=card_button(h))
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, db: Storage, cfg: config_module.Config) -> None:
     chat = db.subscribe(message.chat.id, cfg.default_interval, cfg.default_sources, cfg.default_channels)
@@ -271,7 +296,7 @@ async def cmd_start(message: Message, db: Storage, cfg: config_module.Config) ->
         await message.answer(
             f"Раз в {format_interval(chat.interval_sec)} пришлю табло ближайших хакатонов. "
             "Всё остальное — в приложении: кнопка «Табло» рядом с полем ввода.",
-            reply_markup=app_keyboard(cfg.webapp_url, message.chat.id < 0))
+            reply_markup=app_keyboard(app_url(cfg.webapp_url, (await message.bot.me()).username), message.chat.id < 0))
         return
     await message.answer(f"Подписка оформлена, дайджест будет приходить раз в {format_interval(chat.interval_sec)}.\n\n{HELP}")
 
@@ -576,7 +601,8 @@ async def main() -> None:
     dp["cfg"] = cfg
     if cfg.webapp_url:
         # минимум команд: всё остальное делается в приложении
-        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Табло", web_app=WebAppInfo(url=cfg.webapp_url)))
+        url = app_url(cfg.webapp_url, (await bot.me()).username)
+        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Табло", web_app=WebAppInfo(url=url)))
         await bot.set_my_commands([
             BotCommand(command="digest", description="Табло сейчас"),
             BotCommand(command="interval", description="Как часто присылать"),

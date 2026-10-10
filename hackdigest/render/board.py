@@ -88,7 +88,7 @@ def _status(h: Hackathon, now: datetime) -> tuple[str, str]:
     if h.reg_deadline:
         if h.reg_deadline <= now:
             return "ЗАКРЫТА", DIM
-        return f"ДО {msk(h.reg_deadline):%d.%m}", RED if h.reg_deadline - now <= timedelta(days=2) else AMBER
+        return f"ДО {msk(h.reg_deadline):%d.%m}", RED if h.reg_deadline - now <= timedelta(days=3) else AMBER
     return "ОТКРЫТА", AMBER
 
 
@@ -183,7 +183,7 @@ def _layout(items: list[Hackathon], new_uids: set[str], now: datetime, rows: int
     legend = font("JetBrainsMono-Medium", 19)
     d.rectangle((PAD, y - 15, PAD + 7, y + 1), fill=AMBER)
     x = PAD + 16
-    for text, c in (("НОВОЕ", DIM), ("   КРАСНЫМ", RED), (" — РЕГИСТРАЦИЯ ЗАКРОЕТСЯ ≤ 2 ДНЕЙ", DIM),
+    for text, c in (("НОВОЕ", DIM), ("   КРАСНЫМ", RED), (" — ГОРИТ, РЕГИСТРАЦИЯ ≤ 3 ДНЕЙ", DIM),
                     ("   ЗЕЛЁНЫМ", GREEN), (" — УЖЕ ИДЁТ", DIM)):
         d.text((x, y), text, font=legend, fill=c, anchor="ls")
         x += legend.getlength(text)

@@ -79,6 +79,9 @@
   .stub .k { font: 500 8.5px/1.2 var(--mono); color: var(--mute); letter-spacing: .08em; text-transform: uppercase; }
   .big { font: 800 44px/0.9 var(--display); color: var(--spot); letter-spacing: -.03em; }
   .big + span { font: 600 12px var(--body); }
+  .more-pass { flex: 0 0 120px; scroll-snap-align: center; border: 2px dashed #3a3d3d; border-radius: 14px; color: var(--amber);
+    font: 800 20px/1.2 var(--display); }
+  .more-pass span { font: 500 12px var(--body); color: var(--dim); }
   .bars { height: 26px; background: repeating-linear-gradient(90deg, var(--ink) 0 var(--a,2px), transparent 0 var(--b,4px)); opacity: .9; }
 
   /* ---------- фильтры ---------- */
@@ -104,13 +107,15 @@
   .row::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--seam); opacity: .7; }
   .row:active { filter: brightness(1.15); }
   .d { font: 800 15px/1 var(--mono); color: var(--amber); letter-spacing: .02em; }
-  .d small { display: block; font: 500 9.5px/1.4 var(--mono); color: var(--dim); letter-spacing: .08em; margin-top: 3px; }
+  .d small { display: block; font: 600 10.5px/1.4 var(--body); color: #b3b0a6; margin-top: 3px; }
   .t { min-width: 0; position: relative; z-index: 1; }
-  .t b { display: block; font: 600 14.5px/1.25 var(--body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .t span { display: block; font: 500 11px/1.3 var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+  .t b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font: 600 15px/1.25 var(--body); }
+  .t span { display: block; font: 500 13px/1.3 var(--body); color: #b3b0a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
   .st { font: 800 10.5px/1 var(--mono); letter-spacing: .06em; padding: 6px 7px; border-radius: 6px; background: #121414; white-space: nowrap; position: relative; z-index: 1; }
   .st.go { color: var(--green); } .st.warn { color: var(--amber); } .st.hot { color: var(--red); }
   .row .star { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); z-index: 2; }
+  .btn.all { display: block; width: 100%; margin: 10px 0 4px; color: var(--amber); }
+  .chips.off { opacity: .35; pointer-events: none; }
   .empty { text-align: center; color: var(--dim); padding: 48px 24px; font-size: 14px; }
   .empty b { display: block; font: 800 15px var(--display); color: var(--text); margin-bottom: 6px; }
   .foot { text-align: center; color: #55544f; font: 500 11px var(--mono); padding: 18px 16px 0; letter-spacing: .04em; }
@@ -189,6 +194,8 @@
 (() => {
   const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
   const inTg = !!(tg && tg.platform && tg.platform !== "unknown");
+  // имя бота приходит в адресе приложения (?bot=...): по нему «Напомнить» открывает чат с ботом
+  const BOT = (new URLSearchParams(location.search).get("bot") || "").replace(/[^A-Za-z0-9_]/g, "");
   if (inTg) {
     document.documentElement.classList.add("tg");
     tg.ready(); tg.expand();
@@ -232,6 +239,8 @@
   // ---------- состояние ----------
   let data = { events: [], topics: {} };
   let state = { region: "ru_online", topics: [], mine: false };
+  let showAll = false;
+  const HORIZON = 56 * 864e5;
   let tracked = new Set();
   const $ = (id) => document.getElementById(id);
 
@@ -240,12 +249,21 @@
     const c = [D(e.start), D(e.deadline)].filter((d) => d && d >= now);
     return c.length ? Math.min(...c) : (running(e, now) ? +now : Infinity);
   };
-  // статус «посадки» (регистрации): ГОРИТ — закрывается за 3 дня, ПОСАДКА — открыта, ИДЁТ — уже стартовал
+  // ключевая дата строки: до какого числа можно записаться, а если срока нет — когда старт
+  const keyDate = (e, now) => {
+    const dl = D(e.deadline), st = D(e.start);
+    if (dl && dl > now) return { d: dl, what: "РЕГ. ДО" };
+    if (st && st > now) return { d: st, what: "СТАРТ" };
+    return { d: D(e.end) || st, what: "ФИНИШ" };
+  };
+  // статус отвечает на вопрос «можно ли ещё записаться»: ГОРИТ — закрывается за 3 дня,
+  // ОТКРЫТА — запись идёт, ИДЁТ — уже стартовал и срок записи не указан
+  const HOT = 3 * 864e5;
   const status = (e, now) => {
     const dl = D(e.deadline);
-    if (dl && dl > now && dl - now <= 3 * 864e5) return { cls: "hot", text: "ГОРИТ" };
+    if (dl && dl > now) return dl - now <= HOT ? { cls: "hot", text: "ГОРИТ" } : { cls: "warn", text: "ОТКРЫТА" };
     if (running(e, now)) return { cls: "go", text: "ИДЁТ" };
-    return { cls: "warn", text: "ПОСАДКА" };
+    return { cls: "warn", text: "ОТКРЫТА" };
   };
   const label = (k) => (data.topics[k] && data.topics[k].label) || k;
   const short = { ai: "AI", security: "CTF", web: "Веб", mobile: "Mobile", gamedev: "Геймдев", web3: "Web3", hardware: "Железо",
@@ -258,7 +276,10 @@
   // «Россия + онлайн»: российские события и международные онлайн; «Россия»: только российские
   const inRegion = (e) => state.region === "world" || e.ru || (state.region === "ru_online" && e.online === true);
   const onBoard = (e) => e.source !== "Telegram-каналы";
-  const later = (e, now) => (running(e, now) && !(e.deadline && D(e.deadline) > now)) ? Infinity - 1 : nextMoment(e, now);
+  const later = (e, now) => {
+    if (running(e, now) && !(e.deadline && D(e.deadline) > now)) return Infinity - 1;
+    const k = keyDate(e, now); return k.d ? +k.d : Infinity;
+  };
   function visible(now) {
     return data.events.filter((e) => {
       if (state.mine) return tracked.has(e.id);
@@ -301,12 +322,10 @@
     return [mon.format(at).toUpperCase() + (y !== ny ? " " + y : ""), ""];
   }
   function rowHtml(e, now, i) {
-    // слева — ближайшее событие и что в этот день случится, справа — статус
-    const t = nextMoment(e, now), done = t === Infinity || t === +now;
-    const d = done ? (D(e.end) || D(e.start)) : new Date(t);
-    const what = done ? "ФИНИШ" : (e.deadline && +D(e.deadline) === t ? "РЕГ. ДО" : "СТАРТ");
+    // слева — до какого числа запись (или старт), справа — можно ли ещё записаться
+    const { d, what } = keyDate(e, now);
     const st = status(e, now);
-    const meta = [e.online === true ? "онлайн" : e.place, ...e.topics.slice(0, 2).map(sh), e.prize].filter(Boolean).join(" · ");
+    const meta = [e.online === true ? "онлайн" : e.place, ...e.topics.slice(0, 2).map(sh)].filter(Boolean).join(" · ");
     return `<button class="row in" style="animation-delay:${Math.min(i, 14) * 35}ms" data-id="${e.id}">
       <div class="d">${dm.format(d)}<small>${what}</small></div>
       <div class="t"><b>${esc(e.title)}</b><span>${esc(meta || e.source)}</span></div>
@@ -319,24 +338,35 @@
     $("clock").textContent = `ТАБЛО · ${dm.format(now)} · ${hm.format(now)} МСК`;
     $("mineN").textContent = tracked.size;
     $("mine").setAttribute("aria-pressed", state.mine);
+    $("chips").classList.toggle("off", state.mine);
+    $("region").style.opacity = state.mine ? .35 : ""; $("region").style.pointerEvents = state.mine ? "none" : "";
     document.querySelectorAll("#region button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === state.region));
     const list = visible(now);
 
     // «Горит»: регистрация закрывается в ближайшие 3 дня
-    const hot = list.filter((e) => e.deadline && D(e.deadline) > now && D(e.deadline) - now <= 3 * 864e5).slice(0, 8);
+    const hotAll = list.filter((e) => e.deadline && D(e.deadline) > now && D(e.deadline) - now <= HOT);
+    const hot = hotAll.slice(0, 8);
     $("hot").hidden = !hot.length || state.mine;
-    $("hotN").textContent = hot.length ? `· ${hot.length}` : "";
-    $("rail").innerHTML = hot.map((e) => passCard(e, now)).join("");
+    $("hotN").textContent = hotAll.length ? `· ${hotAll.length}` : "";
+    $("rail").innerHTML = hot.map((e) => passCard(e, now)).join("") +
+      (hotAll.length > hot.length ? `<button class="more-pass" id="moreHot">ещё ${hotAll.length - hot.length}<br><span>в табло ниже</span></button>` : "");
 
-    // табло с группами по неделям/месяцам
+    // табло с группами по неделям/месяцам; по умолчанию — ближайшие 8 недель, дальние по кнопке
+    const running_ = (e) => later(e, now) === Infinity - 1;
+    const upcoming = list.filter((e) => !running_(e)), ongoing = list.filter(running_);
+    const near = showAll || state.mine ? upcoming : upcoming.filter((e) => later(e, now) - now <= HORIZON);
+    const hidden = upcoming.length - near.length;
     let html = "", last = "", i = 0;
-    for (const e of list) {
+    const add = (e) => {
       const [g] = groupName(later(e, now), now);
       if (g !== last) { html += `<div class="group">${g}</div>`; last = g; }
       html += rowHtml(e, now, i++);
-    }
+    };
+    near.forEach(add);
+    if (hidden) html += `<button class="btn all" id="showAll">Показать всё · ещё ${hidden}</button>`;
+    ongoing.forEach(add);
     $("board").innerHTML = html || (state.mine
-      ? `<div class="empty"><b>Пока ничего не отслеживаете</b>Откройте талон и нажмите «Следить» — он появится здесь. Чтобы не пропустить дедлайн, добавьте его в календарь.</div>`
+      ? `<div class="empty"><b>Пока пусто</b>Откройте талон и нажмите «${BOT ? "Напомнить в Telegram" : "В мои"}» — событие появится здесь${BOT ? ", а бот напомнит о дедлайне" : ""}.</div>`
       : `<div class="empty"><b>Рейсов не найдено</b>Снимите часть тем или выберите «Весь мир».</div>`);
     const gen = data.generated ? D(data.generated) : null;
     $("foot").textContent = `${list.length} ${plural(list.length, ["рейс", "рейса", "рейсов"])}` +
@@ -397,7 +427,7 @@
       </div>
       <div class="actions">
         <a class="btn primary" href="${esc(e.url)}" target="_blank" rel="noopener" data-link>Регистрация и детали ↗</a>
-        <button class="btn" id="trk" aria-pressed="${on}">${on ? "★ Слежу" : "☆ Следить"}</button>
+        <button class="btn" id="trk" aria-pressed="${on}">${trkLabel(on)}</button>
         ${cal ? `<a class="btn" href="${esc(cal)}" target="_blank" rel="noopener" data-link>В календарь</a>` : `<span></span>`}
       </div>`;
     $("scrim").classList.add("on"); $("sheet").classList.add("on"); $("sheet").scrollTop = 0;
@@ -406,6 +436,7 @@
       tg.MainButton.setParams({ text: "Регистрация и детали", color: "#ffb52e", text_color: "#0e0f0f", is_visible: true });
     }
   }
+  const trkLabel = (on) => BOT ? (on ? "★ Напомню" : "Напомнить в Telegram") : (on ? "★ В моих" : "☆ В мои");
   function close() {
     $("scrim").classList.remove("on"); $("sheet").classList.remove("on"); current = null;
     if (inTg) { tg.BackButton.hide(); tg.MainButton.hide(); }
@@ -422,7 +453,12 @@
       tracked.has(current.id) ? tracked.delete(current.id) : tracked.add(current.id);
       store.set("tracked", [...tracked]); haptic();
       const on = tracked.has(current.id), b = $("trk");
-      b.setAttribute("aria-pressed", on); b.textContent = on ? "★ Слежу" : "☆ Следить";
+      b.setAttribute("aria-pressed", on); b.textContent = trkLabel(on);
+      // напоминания шлёт бот: передаём ему событие ссылкой-приглашением t.me/<бот>?start=t_<id>
+      if (on && BOT) {
+        const link = `https://t.me/${BOT}?start=t_${current.id}`;
+        inTg ? tg.openTelegramLink(link) : window.open(link, "_blank", "noopener");
+      }
       try { inTg && tg.HapticFeedback.notificationOccurred("success"); } catch (e) {}
       return render();
     }
@@ -434,6 +470,8 @@
     }
     const seg = ev.target.closest("#region button");
     if (seg) { state.region = seg.dataset.v; store.set("state", state); haptic(); renderChips(); return render(); }
+    if (ev.target.closest("#showAll")) { showAll = true; haptic(); return render(); }
+    if (ev.target.closest("#moreHot")) { haptic(); return document.querySelector(".board").scrollIntoView({ behavior: "smooth" }); }
     if (ev.target.closest("#mine")) { state.mine = !state.mine; haptic(); window.scrollTo(0, 0); return render(); }
   });
   $("scrim").addEventListener("click", close);

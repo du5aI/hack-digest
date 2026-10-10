@@ -52,10 +52,17 @@ def snapshot(items: list[Hackathon], now: datetime, failed: list[str]) -> dict:
     }
 
 
+def plausible(h: Hackathon, now: datetime) -> bool:
+    """Отсекает явные ошибки разбора дат: событие дальше чем через год — почти всегда опечатка источника."""
+    dates = [d for d in (h.start, h.reg_deadline) if d]
+    return all(d.year <= now.year + 1 for d in dates)
+
+
 async def build(now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     raw, failed = await fetch_all([*SOURCES, "telegram"], DEFAULT_CHANNELS)
-    return snapshot(select(raw, Filters(region="world"), now), now, failed)
+    items = [h for h in select(raw, Filters(region="world"), now) if plausible(h, now)]
+    return snapshot(items, now, failed)
 
 
 def main() -> None:
